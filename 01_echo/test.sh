@@ -1,6 +1,7 @@
 #!/bin/bash
-raco make 01_echo.rkt
-raco exe 01_echo.rkt
+# raco make 01_echo_new.rkt
+# raco exe 01_echo_new.rkt
+export PLTSTDERR="error debug@maelstrom"
 echo '{
   "src": "c1",
   "dest": "n1",
@@ -20,4 +21,4 @@ echo '{
     "echo": "Please echo 35"
   }
 }
-' | ./01_echo
+' | racket ./01_echo_new.rkt

@@ -17,8 +17,17 @@ echo '{
   "dest": "n1",
   "body": {
     "type": "echo",
-    "msg_id": 1,
+    "msg_id": 2,
     "echo": "Please echo 35"
+  }
+}
+{
+  "src": "c1",
+  "dest": "n1",
+  "body": {
+    "type": "echo",
+    "msg_id": 3,
+    "echo": "Please echo 97"
   }
 }
 ' | racket ./01_echo_new.rkt

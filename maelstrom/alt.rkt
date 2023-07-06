@@ -5,6 +5,7 @@
 (require racket/contract)
 (require racket/class)
 (require racket/logging)
+(require racket/list)
 
 (module+ test
   (require rackunit))
@@ -85,36 +86,66 @@
     (unless (node-id node)
       (error "node id unset. not initialized?"))
 
-    (let loop ([outgoing-message-id 2])
-      ; ok, what can happen concurrently?
-      ; a previously dispatched handler can have new messages to write
-      ; a new dispatch request can come in on the input port
-      ; here we are going to block on reading the entire input message
-      ; because it is stdin and should be fast as long as the maelstrom driver
-      ; is keeping it busy.
-      ; however a better approach would be to run (read-json)
-      ; in a separate thread which then posts to this thread when a
-      ; complete message is read.
-      (sync
-       ; we need to give each handler a channel instead of receiving into the thread
-       ; mailbox, and then sync will always have the right number
-       ; (Use choice-evt with append or similar)
-       ; see the resource-pool lib
-       ; otherwise we will block on the receive forever
-       ; and more importantly, if the input port is closed
-       ; then that event will always be selected.
-       ; so we need to somehow remove read-bytes-evt
-       ; from the sync set.
-       (handle-evt (read-bytes-evt 1 (current-input-port))
-                   (lambda (_)
-                     (define msg (read-json))
-                     (unless (eof-object? msg)
-                       (dispatch node msg)
-                       (loop outgoing-message-id))))
-       (handle-evt (thread-receive-evt)
-                   (lambda (_)
-                     (write-msg outgoing-message-id (thread-receive))
-                     (loop (add1 outgoing-message-id)))))))
+    (let loop ([outgoing-message-id 2]
+               [input-closed #f]
+               [dispatched null])
+
+      (log-maelstrom-debug "loop ----")
+
+
+      (define evts
+        (for/list ([th (in-list dispatched)])
+          (handle-evt th
+                      (lambda (th)
+                        ; when run, it means that thread exited.
+                        (log-maelstrom-debug "thread died ~v" th)
+                        (loop outgoing-message-id input-closed (remq th dispatched))))))
+
+      ; ah, but if a thread dies and sync selects that, we may never add a thread-receive
+      ; so we won't get any messages to write.
+      (log-maelstrom-debug "input-closed? ~v pending dispatches? ~v" input-closed dispatched)
+      (define evts1
+        (if (and input-closed (empty? dispatched))
+            evts
+            (begin
+              (log-maelstrom-debug "Added thread-receive-evt")
+              (cons
+               (handle-evt (thread-receive-evt)
+                           (lambda (_)
+                             (log-maelstrom-debug "new msg to write")
+                             (write-msg outgoing-message-id (thread-receive))
+                             (loop (add1 outgoing-message-id) input-closed dispatched)))
+               evts))))
+
+      (define evts2
+        (if input-closed
+            evts1
+            (begin
+              (log-maelstrom-debug "Added input reading")
+              (cons
+               (handle-evt (read-bytes-evt 1 (current-input-port))
+                           (lambda (_)
+                             (define msg (read-json))
+                             (log-maelstrom-debug "read from input ~v" msg)
+                             (if (eof-object? msg)
+                                 ; no longer wait on input
+                                 (loop outgoing-message-id #t dispatched)
+                               
+                                 (loop outgoing-message-id #f (cons (dispatch node msg) dispatched)))))
+               evts1))))
+
+      (unless (empty? evts2)
+        (apply sync evts2))))
+
+  (let loop ()
+    (let ([d (thread-try-receive)])
+      (log-maelstrom-debug "Got mail? ~v" d)
+      (when d
+        ; Ugh! Now we don't know the outgoing message id
+        (write-msg 1000000 d)
+        (loop))))
+
+
   ; shut down all handlers before exiting
   (custodian-shutdown-all main-cust))
 

@@ -6,6 +6,7 @@
 (require racket/class)
 (require racket/logging)
 (require racket/list)
+(require racket/match)
 
 (module+ test
   (require rackunit))
@@ -54,18 +55,29 @@
   (define msg-id 5)
   msg-id)
 
-(struct node ([id #:mutable] handlers in out))
+(struct node ([id #:mutable] handlers in out [msg-id #:mutable]))
 
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
 
-(define (write-msg id msg)
+(define (write-msg-int id msg)
+  (define js (hash-set msg 'body
+                       (hash-set (message-body msg) 'msg_id id)))
+  (log-maelstrom-debug "Writing ~v" js)
   (write-json
-   (hash-set msg 'body
-             (hash-set (message-body msg) 'msg_id id)))
+   js)
   (newline)
   (flush-output))
+
+(define (write-msg node msg)
+  (define next-id (add1 (node-msg-id node)))
+  (set-node-msg-id! node next-id)
+  (write-msg-int next-id msg))
+
+(struct Output (message))
+(struct Input (message))
+(struct Input-Closed ())
 
 (define/contract (run node)
   (-> node? void)
@@ -81,69 +93,61 @@
         (dispatch node msg)))
     ; this is not very robust, since if init is not the first
     ; message sent, then we will dispatch on the wrong handler
-    (write-msg 1 (thread-receive))
+    (match (thread-receive)
+      [(Output msg) (write-msg node msg)])
 
     (unless (node-id node)
       (error "node id unset. not initialized?"))
 
-    (let loop ([outgoing-message-id 2]
-               [input-closed #f]
-               [dispatched null])
+    #|
+    because read-json is blocking, this bit needs to be modified quite significantly.
+    First, spawn another thread to read input. it should send a message to the main thread
+    mailbox with a complete input message.
+    Second, now the main thread needs to distinguish between input messages and write requests.
+    Third, the main thread still needs to know when the input is closed
+    |#
 
-      (log-maelstrom-debug "loop ----")
+    (let ([main-thread (current-thread)])
+      (thread
+       (lambda ()
+         (let loop ()
+           (define m (read-json))
+           (if (eof-object? m)
+               (thread-send main-thread (Input-Closed))
+               (begin
+                 (log-maelstrom-debug "Got new input ~v" m)
+                 (thread-send main-thread (Input m))
+                 (loop)))))))
 
+    (let loop ([dispatched null]
+               [done-with-inputs #f])
+      (define dispatch-evts
+        (for/list ([d (in-list dispatched)])
+          (handle-evt
+           d
+           (lambda (_)
+             ; thread died
+             (loop (remq d dispatched) done-with-inputs)))))
 
-      (define evts
-        (for/list ([th (in-list dispatched)])
-          (handle-evt th
-                      (lambda (th)
-                        ; when run, it means that thread exited.
-                        (log-maelstrom-debug "thread died ~v" th)
-                        (loop outgoing-message-id input-closed (remq th dispatched))))))
+      ; if there is at least one handler in progress
+      ; or input is not closed, wait for new mailbox messages
+      (unless (and (empty? dispatched) done-with-inputs)
+        (apply
+         sync
+         (handle-evt
+          (thread-receive-evt)
+          (lambda (_)
+            (match (thread-receive)
+              [(Input msg) (loop (cons (dispatch node msg) dispatched) done-with-inputs)]
+              [(Input-Closed) (loop dispatched #t)]
+              [(Output msg) (write-msg node msg) (loop dispatched done-with-inputs)])))
+         dispatch-evts)))
 
-      ; ah, but if a thread dies and sync selects that, we may never add a thread-receive
-      ; so we won't get any messages to write.
-      (log-maelstrom-debug "input-closed? ~v pending dispatches? ~v" input-closed dispatched)
-      (define evts1
-        (if (and input-closed (empty? dispatched))
-            evts
-            (begin
-              (log-maelstrom-debug "Added thread-receive-evt")
-              (cons
-               (handle-evt (thread-receive-evt)
-                           (lambda (_)
-                             (log-maelstrom-debug "new msg to write")
-                             (write-msg outgoing-message-id (thread-receive))
-                             (loop (add1 outgoing-message-id) input-closed dispatched)))
-               evts))))
-
-      (define evts2
-        (if input-closed
-            evts1
-            (begin
-              (log-maelstrom-debug "Added input reading")
-              (cons
-               (handle-evt (read-bytes-evt 1 (current-input-port))
-                           (lambda (_)
-                             (define msg (read-json))
-                             (log-maelstrom-debug "read from input ~v" msg)
-                             (if (eof-object? msg)
-                                 ; no longer wait on input
-                                 (loop outgoing-message-id #t dispatched)
-                               
-                                 (loop outgoing-message-id #f (cons (dispatch node msg) dispatched)))))
-               evts1))))
-
-      (unless (empty? evts2)
-        (apply sync evts2))))
-
-  (let loop ()
-    (let ([d (thread-try-receive)])
-      (log-maelstrom-debug "Got mail? ~v" d)
-      (when d
-        ; Ugh! Now we don't know the outgoing message id
-        (write-msg 1000000 d)
-        (loop))))
+    ; go through any final pending tasks in the queue
+    (let loop ()
+      (match (thread-try-receive)
+        [(Output msg) (write-msg node msg) (loop)]
+        [#f void])))
 
 
   ; shut down all handlers before exiting
@@ -151,7 +155,7 @@
 
 
 (define (make-std-node)
-  (define n (node #f (make-hash) (current-input-port) (current-output-port)))
+  (define n (node #f (make-hash) (current-input-port) (current-output-port) 0))
   ; TODO: If we don't need to add handlers, simplify this.
   n)
 
@@ -164,7 +168,8 @@
   (hash-set response 'src (node-id (current-node))))
 
 (define (send dest response)
-  (thread-send (current-node-main-thread) (add-sender response)))
+  (thread-send (current-node-main-thread) (Output (add-sender response)))
+  (log-maelstrom-debug "Queued up response to ~v" (current-node-main-thread)))
 
 ; hmm the outgoing message ID should really only be inserted
 ; by the main thread (so no concurrency necessary) at the time
@@ -181,6 +186,7 @@
 
 (define (dispatch node message)
   (-> node? message? void)
+  (log-maelstrom-debug "Dispatching on (expecting responses) ~v" (current-thread))
   (define handler (hash-ref (node-handlers node) (message-type message)))
   ; This custodian isn't used for anything right now, but
   ; could be used to time out handlers.
@@ -200,8 +206,10 @@
 
 
 (module+ test
-  (with-logging-to-port (current-error-port) (lambda () 
-                                               (define INIT_MSG #<<EOF
+  (with-logging-to-port
+      (current-error-port)
+    (lambda () 
+      (define INIT_MSG #<<EOF
 {
   "src": "c1",
   "dest": "n1",
@@ -213,16 +221,19 @@
   }
 }
 EOF
-                                                 )
+        )
+
+      ; this is awkward, but multi-line strings do not allow internal newlines.
+      (define ECHO_MSG "{\"src\": \"c1\",\"dest\": \"n1\",\"body\": {\"type\": \"echo\",\"msg_id\": 2,\"echo\": \"Please echo 35\"}}\n\n\n")
   
-                                               (test-case
-                                                "message validation"
-                                                (check-false (message? "not-a-jsexpr"))
-                                                (check-false (message? (string->jsexpr #<<EOF
+      (test-case
+       "message validation"
+       (check-false (message? "not-a-jsexpr"))
+       (check-false (message? (string->jsexpr #<<EOF
 {"src": "bazqux", "body": {}}
 EOF
-                                                                                       )))
-                                                (check-true (message? (string->jsexpr #<<EOF
+                                              )))
+       (check-true (message? (string->jsexpr #<<EOF
 {
   "src": "c1",
   "dest": "n1",
@@ -232,33 +243,53 @@ EOF
     "echo": "Please echo 35"
   }
 }
+
 EOF
-                                                                                      ))))
+                                             ))))
+      
+      (test-case
+       "Initialization"
 
-                                               (test-case
-                                                "Initialization"
+       ; EOF leads to no initialization
+       (with-input-from-string
+           ""
+         (lambda ()
+           (define node (make-std-node))
+           (check-false (node-id node))))
 
-                                                ; EOF leads to no initialization
-                                                (with-input-from-string
-                                                    ""
-                                                  (lambda ()
-                                                    (define node (make-std-node))
-                                                    (check-false (node-id node))))
+       (with-input-from-string INIT_MSG
+         (lambda ()
+           (define output
+             (with-output-to-string
+               (lambda ()
+                 (define node (make-std-node))
+                 (run node)
+                 (check-equal? (node-id node) "n3"))))
+           (define msg (string->jsexpr output))
+           (check-match msg
+                        (hash-table
+                         ('src "n3")
+                         ('dest "c1")
+                         ('body (hash-table
+                                 ('in_reply_to 1)
+                                 ('type "init_ok"))))))))
 
-                                                (with-input-from-string INIT_MSG
-                                                  (lambda ()
-                                                    (define output
-                                                      (with-output-to-string
-                                                        (lambda ()
-                                                          (define node (make-std-node))
-                                                          (run node)
-                                                          (check-equal? (node-id node) "n3"))))
-                                                    (define msg (string->jsexpr output))
-                                                    (check-match msg
-                                                                 (hash-table
-                                                                  ('src "n3")
-                                                                  ('dest "c1")
-                                                                  ('body (hash-table
-                                                                          ('in_reply_to 1)
-                                                                          ('type "init_ok")))))))))
-    #:logger maelstrom-logger 'info))
+      (test-case
+       "Echo does not hang"
+       (define-values (read-end write-end) (make-pipe))
+       (thread
+        (lambda ()
+          (write-string INIT_MSG write-end)
+          (write-string ECHO_MSG write-end)
+          (sleep 2)
+          
+          (write-string ECHO_MSG write-end)
+          (close-output-port write-end)))
+       (parameterize ([current-input-port read-end])
+         (define node (make-std-node))
+         (add-handler node
+                      "echo"
+                      (lambda (req)
+                        (respond (make-response req `(echo . ,(message-ref req 'echo))))))
+         (run node))))
+    #:logger maelstrom-logger 'info)) ; change to 'debug when investigating

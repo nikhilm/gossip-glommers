@@ -2,7 +2,9 @@
 (require maelstrom)
 
 (module+ main
-  (define node (make-node))
-  (add-handler node "echo" (lambda (req)
-                            (send node respond `(echo . ,(hash-ref req 'echo)))))
-  (send node run))
+  (define node (make-std-node))
+  (add-handler node
+               "echo"
+               (lambda (req)
+                 (respond (make-response req `(echo . ,(message-ref req 'echo))))))
+  (run node))

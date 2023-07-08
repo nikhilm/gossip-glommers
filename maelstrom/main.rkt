@@ -17,7 +17,8 @@
          send
          respond
          message-ref
-         make-response)
+         make-response
+         get-node-id)
 
 (define-logger maelstrom)
 (define current-node (make-parameter #f))
@@ -56,6 +57,9 @@
   msg-id)
 
 (struct node ([id #:mutable] handlers in out [msg-id #:mutable]))
+
+(define (get-node-id node)
+  (node-id node))
 
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)

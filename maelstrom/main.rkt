@@ -8,6 +8,8 @@
 (require racket/list)
 (require racket/match)
 
+(require maelstrom/message)
+
 (module+ test
   (require rackunit))
 
@@ -18,48 +20,15 @@
          respond
          message-ref
          make-response
-         get-node-id)
+         node-id)
 
 (define-logger maelstrom)
 (define current-node (make-parameter #f))
 (define current-input-msg (make-parameter #f))
 (define current-node-main-thread (make-parameter #f))
 
-(define (message? msg)
-  (and (hash? msg)
-       (hash-has-key? msg 'src)
-       (hash-has-key? msg 'dest)
-       (hash-has-key? msg 'body)))
-
-(define (message-ref msg key)
-  (hash-ref (message-body msg) key))
-
-(define (message-sender msg)
-  (hash-ref msg 'src))
-
-(define (message-id msg)
-  (message-ref msg 'msg_id))
-
-(define (message-body msg)
-  (hash-ref msg 'body))
-
-(define/contract (message-type msg)
-  (-> message? string?)
-  (message-ref msg 'type))
-
-(define/contract (with-message msg handler)
-  (-> message? any/c any/c)
-  (handler msg))
-
-(define (init-from-msg msg)
-  (define node-id (message-ref msg 'node_id))
-  (define msg-id 5)
-  msg-id)
 
 (struct node ([id #:mutable] handlers in out [msg-id #:mutable]))
-
-(define (get-node-id node)
-  (node-id node))
 
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)
@@ -228,28 +197,10 @@ EOF
         )
 
       ; this is awkward, but multi-line strings do not allow internal newlines.
+      ; internal newlines are required to validate the input reader is running in
+      ; a separate thread where it is ok for read-json to block. 
       (define ECHO_MSG "{\"src\": \"c1\",\"dest\": \"n1\",\"body\": {\"type\": \"echo\",\"msg_id\": 2,\"echo\": \"Please echo 35\"}}\n\n\n")
   
-      (test-case
-       "message validation"
-       (check-false (message? "not-a-jsexpr"))
-       (check-false (message? (string->jsexpr #<<EOF
-{"src": "bazqux", "body": {}}
-EOF
-                                              )))
-       (check-true (message? (string->jsexpr #<<EOF
-{
-  "src": "c1",
-  "dest": "n1",
-  "body": {
-    "type": "echo",
-    "msg_id": 1,
-    "echo": "Please echo 35"
-  }
-}
-
-EOF
-                                             ))))
       
       (test-case
        "Initialization"

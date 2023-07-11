@@ -19,5 +19,5 @@
      (respond
       (make-response
        req
-       `(id . ,(format "~v_~v" (get-node-id node) (incr-id id-box)))))))
+       `(id . ,(format "~v_~v" (node-id node) (incr-id id-box)))))))
   (run node))

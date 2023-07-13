@@ -23,34 +23,42 @@
          node-id)
 
 (define-logger maelstrom)
+
+; Used to preserve context to offer an intuitive API
+; for handlers where they can just call send or respond.
 (define current-node (make-parameter #f))
 (define current-input-msg (make-parameter #f))
 (define current-node-main-thread (make-parameter #f))
 
 
 (struct node ([id #:mutable] handlers in out [msg-id #:mutable]))
+(struct Output (message))
+(struct Input (message))
+
+(define/contract (make-std-node)
+  (-> node?)
+  (node #f (make-hash) (current-input-port) (current-output-port) 0))
+
+(define (respond response)
+  (when (not (current-input-msg))
+    (error "Cannot call send outside the execution context of a handler"))
+  (send (message-sender (current-input-msg)) response))
+
+(define (send dest response)
+  (when (not (current-node-main-thread))
+    (error "Cannot call send outside the execution context of a handler"))
+  (thread-send (current-node-main-thread) (Output (add-dest (add-src response) dest)))
+  (log-maelstrom-debug "Queued up response to ~v" (current-node-main-thread)))
+
+(define (make-response input . additional-body)
+  (hash 'body (make-immutable-hasheq
+               (append `((type . ,(string-append (message-type input) "_ok"))
+                         (in_reply_to . ,(message-id input)))
+                       additional-body))))
 
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
-
-(define (write-msg-int id msg)
-  (define js (hash-set msg 'body
-                       (hash-set (message-body msg) 'msg_id id)))
-  (log-maelstrom-debug "Writing ~v" js)
-  (write-json
-   js)
-  (newline)
-  (flush-output))
-
-(define (write-msg node msg)
-  (define next-id (add1 (node-msg-id node)))
-  (set-node-msg-id! node next-id)
-  (write-msg-int next-id msg))
-
-(struct Output (message))
-(struct Input (message))
-(struct Input-Closed ())
 
 (define/contract (run node)
   (-> node? void)
@@ -80,18 +88,7 @@
     Third, the main thread still needs to know when the input is closed
     |#
 
-    (let ([main-thread (current-thread)])
-      (thread
-       (lambda ()
-         (let loop ()
-           (define m (read-json))
-           (if (eof-object? m)
-               (thread-send main-thread (Input-Closed))
-               (begin
-                 (log-maelstrom-debug "Got new input ~v" m)
-                 (thread-send main-thread (Input m))
-                 (loop)))))))
-
+    (define reader-thread (spawn-reader-thread (current-thread)))
     (let loop ([dispatched null]
                [done-with-inputs #f])
       (define dispatch-evts
@@ -104,15 +101,22 @@
 
       ; if there is at least one handler in progress
       ; or input is not closed, wait for new mailbox messages
+      ; as well as for all handlers to be done.
       (unless (and (empty? dispatched) done-with-inputs)
         (apply
          sync
+         ; if the reader thread dies, treat that as input being closed.
+         ; this is better than having an Input-Closed message as it handles
+         ; the input thread encountering exceptions.
+         (handle-evt
+          reader-thread
+          (lambda (_) (loop dispatched #t)))
+         
          (handle-evt
           (thread-receive-evt)
           (lambda (_)
             (match (thread-receive)
               [(Input msg) (loop (cons (dispatch node msg) dispatched) done-with-inputs)]
-              [(Input-Closed) (loop dispatched #t)]
               [(Output msg) (write-msg node msg) (loop dispatched done-with-inputs)])))
          dispatch-evts)))
 
@@ -126,36 +130,39 @@
   ; shut down all handlers before exiting
   (custodian-shutdown-all main-cust))
 
+(define (write-msg-int id msg)
+  (define js (hash-set msg 'body
+                       (hash-set (message-body msg) 'msg_id id)))
+  (log-maelstrom-debug "Writing ~v" js)
+  (write-json
+   js)
+  (newline)
+  (flush-output))
 
-(define (make-std-node)
-  (define n (node #f (make-hash) (current-input-port) (current-output-port) 0))
-  ; TODO: If we don't need to add handlers, simplify this.
-  n)
+(define (write-msg node msg)
+  (define next-id (add1 (node-msg-id node)))
+  (set-node-msg-id! node next-id)
+  (write-msg-int next-id msg))
 
-; should use the parameterized current message for this thread to derive response values
-(define (respond response)
-  ; TODO: Add attrs from the current input msg
-  (send 'todo-dest response))
+(define (spawn-reader-thread main-thread)
+  (thread
+   (lambda ()
+     (let loop ()
+       (define m (read-json))
+       (if (eof-object? m)
+           (begin
+             (log-maelstrom-debug "Received EOF on input. Stopping reader thread."))
+           (begin
+             (log-maelstrom-debug "Got new input ~v" m)
+             (thread-send main-thread (Input m))
+             (loop)))))))
 
-(define (add-sender response)
+
+(define (add-src response)
   (hash-set response 'src (node-id (current-node))))
 
-(define (send dest response)
-  (thread-send (current-node-main-thread) (Output (add-sender response)))
-  (log-maelstrom-debug "Queued up response to ~v" (current-node-main-thread)))
-
-; hmm the outgoing message ID should really only be inserted
-; by the main thread (so no concurrency necessary) at the time
-; of writing
-
-(define (make-response input . additional-body)
-  (define response
-    (hash 'dest (message-sender input)))
-   
-  (hash-set response 'body (make-immutable-hasheq
-                            (append `((type . ,(string-append (message-type input) "_ok"))
-                                      (in_reply_to . ,(message-id input)))
-                                    additional-body))))
+(define (add-dest response dest)
+  (hash-set response 'dest dest))
 
 (define (dispatch node message)
   (-> node? message? void)
@@ -169,7 +176,13 @@
                  [current-node-main-thread (current-thread)]
                  [current-input-msg message])
     (log-maelstrom-debug "Dispatching ~v" message)
-    (thread (lambda() (handler message)))))
+    (thread
+     (lambda()
+       (with-handlers
+           ([exn:fail? (lambda (e)
+                         (log-maelstrom-error "Error while dispatching handler ~v for message type ~v" handler (message-type message))
+                         (raise e))])
+         (handler message))))))
 
 (define (initialize msg)
   (when (node-id (current-node))
@@ -232,19 +245,62 @@ EOF
       (test-case
        "Echo does not hang"
        (define-values (read-end write-end) (make-pipe))
+       (define-values (out-read-end out-write-end) (make-pipe))
+       (define sem (make-semaphore))
        (thread
         (lambda ()
           (write-string INIT_MSG write-end)
           (write-string ECHO_MSG write-end)
-          (sleep 2)
+          ; wait until the main thread acknowledges it received a response.
+          (semaphore-wait sem)
           
           (write-string ECHO_MSG write-end)
           (close-output-port write-end)))
-       (parameterize ([current-input-port read-end])
+
+       (thread
+        (lambda ()
+          (after (check-match (read-json out-read-end)
+                              (hash-table
+                               ('src _)
+                               ('dest _)
+                               ('body (hash-table
+                                       ('in_reply_to _)
+                                       ('type "init_ok")))))
+                 (check-match (read-json out-read-end)
+                              (hash-table
+                               ('src _)
+                               ('dest _)
+                               ('body (hash-table
+                                       ('in_reply_to _)
+                                       ('type "echo_ok")))))
+                 (semaphore-post sem))
+          (check-match (read-json out-read-end)
+                       (hash-table
+                        ('src _)
+                        ('dest _)
+                        ('body (hash-table
+                                ('in_reply_to _)
+                                ('type "echo_ok")))))))
+       
+       (parameterize ([current-input-port read-end]
+                      [current-output-port out-write-end])
          (define node (make-std-node))
          (add-handler node
                       "echo"
                       (lambda (req)
                         (respond (make-response req `(echo . ,(message-ref req 'echo))))))
-         (run node))))
+         (run node)))
+
+      (test-case
+       "If a handler throws an exception, it is logged, but run still exits"
+       (parameterize ([current-output-port (open-output-nowhere)])
+         (with-input-from-string
+             (string-append INIT_MSG ECHO_MSG)
+           (lambda ()
+             (define node (make-std-node))
+             (add-handler node
+                          "echo"
+                          (lambda (req)
+                            (error "Intentional error")))
+             (run node))))))
     #:logger maelstrom-logger 'info)) ; change to 'debug when investigating

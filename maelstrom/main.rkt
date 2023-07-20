@@ -20,7 +20,8 @@
          respond
          message-ref
          make-response
-         node-id)
+         node-id
+         known-node-ids)
 
 (define-logger maelstrom)
 
@@ -31,13 +32,13 @@
 (define current-node-main-thread (make-parameter #f))
 
 
-(struct node ([id #:mutable] handlers in out [msg-id #:mutable]))
+(struct node ([id #:mutable] handlers in out [other-nodes #:mutable] [msg-id #:mutable]))
 (struct Output (message))
 (struct Input (message))
 
 (define/contract (make-std-node)
   (-> node?)
-  (node #f (make-hash) (current-input-port) (current-output-port) 0))
+  (node #f (make-hash) (current-input-port) (current-output-port) null 0))
 
 (define (respond response)
   (when (not (current-input-msg))
@@ -59,6 +60,10 @@
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
+
+(define/contract (known-node-ids node)
+  (node? . -> . (listof string?))
+  (node-other-nodes node))
 
 (define/contract (run node)
   (-> node? void)
@@ -188,6 +193,7 @@
   (when (node-id (current-node))
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
+  (set-node-other-nodes! (current-node) (message-ref msg 'node_ids))
   (respond (make-response msg)))
 
 
@@ -231,8 +237,10 @@ EOF
              (with-output-to-string
                (lambda ()
                  (define node (make-std-node))
+                 (check-equal? (known-node-ids node) null)
                  (run node)
-                 (check-equal? (node-id node) "n3"))))
+                 (check-equal? (node-id node) "n3")
+                 (check-equal? (known-node-ids node) (list "n1" "n2" "n3")))))
            (define msg (string->jsexpr output))
            (check-match msg
                         (hash-table

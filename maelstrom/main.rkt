@@ -71,66 +71,44 @@
   (parameterize ([current-custodian main-cust]
                  [current-input-port (node-in node)]
                  [current-output-port (node-out node)])
-    ; Initialize. the initialize function is just a handler, but
-    ; we block on reading the response instead of running it concurrently.
-    (add-handler node "init" initialize)
-    (let ([msg (read-json)])
-      (unless (eof-object? msg)
-        (dispatch node msg)))
-    ; this is not very robust, since if init is not the first
-    ; message sent, then we will dispatch on the wrong handler
-    (match (thread-receive)
-      [(Output msg) (write-msg node msg)])
-
-    (unless (node-id node)
-      (error "node id unset. not initialized?"))
-
-    #|
-    because read-json is blocking, this bit needs to be modified quite significantly.
-    First, spawn another thread to read input. it should send a message to the main thread
-    mailbox with a complete input message.
-    Second, now the main thread needs to distinguish between input messages and write requests.
-    Third, the main thread still needs to know when the input is closed
-    |#
+    (initialize node)
 
     (define reader-thread (spawn-reader-thread (current-thread)))
+    
     (let loop ([dispatched null]
                [done-with-inputs #f])
-      (define dispatch-evts
-        (for/list ([d (in-list dispatched)])
-          (handle-evt
-           d
-           (lambda (_)
-             ; thread died
-             (loop (remq d dispatched) done-with-inputs)))))
-
       ; if there is at least one handler in progress
       ; or input is not closed, wait for new mailbox messages
       ; as well as for all handlers to be done.
       (unless (and (empty? dispatched) done-with-inputs)
-        (apply
-         sync
-         ; if the reader thread dies, treat that as input being closed.
-         ; this is better than having an Input-Closed message as it handles
-         ; the input thread encountering exceptions.
-         (handle-evt
-          reader-thread
-          (lambda (_) (loop dispatched #t)))
+        (apply sync
+               (handle-evt reader-thread (λ (_) (loop dispatched #t)))
          
-         (handle-evt
-          (thread-receive-evt)
-          (lambda (_)
-            (match (thread-receive)
-              [(Input msg) (loop (cons (dispatch node msg) dispatched) done-with-inputs)]
-              [(Output msg) (write-msg node msg) (loop dispatched done-with-inputs)])))
-         dispatch-evts)))
+               (handle-evt
+                (thread-receive-evt)
+                (λ (_)
+                  (match (thread-receive)
+                    [(Input msg)
+                     (define dispatched-thread (dispatch node msg))
+                     (loop (cons dispatched-thread dispatched)
+                           done-with-inputs)]
+                    
+                    [(Output msg)
+                     (write-msg node msg)
+                     (loop dispatched done-with-inputs)])))
+               
+               
+               (for/list ([d (in-list dispatched)])
+                 (handle-evt d
+                             (λ (_)
+                               ; thread died
+                               (loop (remq d dispatched) done-with-inputs)))))))
 
     ; go through any final pending tasks in the queue
     (let loop ()
       (match (thread-try-receive)
         [(Output msg) (write-msg node msg) (loop)]
         [#f void])))
-
 
   ; shut down all handlers before exiting
   (custodian-shutdown-all main-cust))
@@ -189,7 +167,22 @@
                          (raise e))])
          (handler message))))))
 
-(define (initialize msg)
+(define (initialize node)
+  ; Initialize. the initialize function is just a handler, but
+  ; we block on reading the response instead of running it concurrently.
+  (add-handler node "init" initialize-handler)
+  (let ([msg (read-json)])
+    (unless (eof-object? msg)
+      (dispatch node msg)))
+  ; this is not very robust, since if init is not the first
+  ; message sent, then we will dispatch on the wrong handler
+  (match (thread-receive)
+    [(Output msg) (write-msg node msg)])
+
+  (unless (node-id node)
+    (error "node id unset. not initialized?")))
+
+(define (initialize-handler msg)
   (when (node-id (current-node))
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
@@ -310,5 +303,9 @@ EOF
                           "echo"
                           (lambda (req)
                             (error "Intentional error")))
-             (run node))))))
+             (run node)))))
+
+      (test-case
+       "RPC: Support waiting for a sent message's response"
+       ))
     #:logger maelstrom-logger 'info)) ; change to 'debug when investigating

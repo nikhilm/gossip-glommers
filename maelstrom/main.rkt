@@ -61,9 +61,13 @@
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
 
-(define/contract (known-node-ids node)
-  (node? . -> . (listof string?))
-  (node-other-nodes node))
+(define known-node-ids
+  (case-lambda
+    [() (node-other-nodes (current-node))]
+    [(n)
+     (unless (node? n)
+       (raise-argument-error 'known-node-ids "node?" n))
+     (node-other-nodes n)]))
 
 (define/contract (run node)
   (-> node? void)
@@ -186,7 +190,7 @@
   (when (node-id (current-node))
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
-  (set-node-other-nodes! (current-node) (message-ref msg 'node_ids))
+  (set-node-other-nodes! (current-node) (remove (message-ref msg 'node_id) (message-ref msg 'node_ids)))
   (respond (make-response msg)))
 
 
@@ -233,7 +237,7 @@ EOF
                  (check-equal? (known-node-ids node) null)
                  (run node)
                  (check-equal? (node-id node) "n3")
-                 (check-equal? (known-node-ids node) (list "n1" "n2" "n3")))))
+                 (check-equal? (known-node-ids node) (list "n1" "n2")))))
            (define msg (string->jsexpr output))
            (check-match msg
                         (hash-table
@@ -289,6 +293,7 @@ EOF
          (add-handler node
                       "echo"
                       (lambda (req)
+                        (check-equal? (known-node-ids) (list "n1" "n2"))
                         (respond (make-response req `(echo . ,(message-ref req 'echo))))))
          (run node)))
 

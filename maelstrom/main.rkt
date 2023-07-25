@@ -7,6 +7,7 @@
 (require racket/logging)
 (require racket/list)
 (require racket/match)
+(require racket/string)
 
 (require maelstrom/message)
 
@@ -16,9 +17,11 @@
 (provide make-std-node
          add-handler
          run
+         rpc
          send
          respond
          message-ref
+         make-message
          make-response
          node-id
          known-node-ids)
@@ -32,24 +35,44 @@
 (define current-node-main-thread (make-parameter #f))
 
 
-(struct node ([id #:mutable] handlers in out [other-nodes #:mutable] [msg-id #:mutable]))
+(struct node
+  ([id #:mutable]
+   handlers
+   in
+   out
+   [other-nodes #:mutable]
+   [msg-id #:mutable]
+   ; hash table from `in_reply_to` integer to a callback
+   rpc-handlers))
+
 (struct Output (message))
 (struct Input (message))
+(struct Rpc (message response-handler))
 
 (define/contract (make-std-node)
   (-> node?)
-  (node #f (make-hash) (current-input-port) (current-output-port) null 0))
+  (node #f (make-hash) (current-input-port) (current-output-port) null 0 (make-hasheqv)))
 
 (define (respond response)
   (when (not (current-input-msg))
     (error "Cannot call send outside the execution context of a handler"))
   (send (message-sender (current-input-msg)) response))
 
-(define (send dest response)
+(define (send dest msg)
   (when (not (current-node-main-thread))
     (error "Cannot call send outside the execution context of a handler"))
-  (thread-send (current-node-main-thread) (Output (add-dest (add-src response) dest)))
-  (log-maelstrom-debug "Queued up response to ~v" (current-node-main-thread)))
+  (define with-deets (add-dest (add-src msg) dest))
+  (thread-send (current-node-main-thread) (Output with-deets)))
+
+(define (rpc dest msg response-handler)
+  (when (not (current-node-main-thread))
+    (error "Cannot call send outside the execution context of a handler"))
+  (define with-deets (add-dest (add-src msg) dest))
+  (thread-send (current-node-main-thread) (Rpc with-deets response-handler)))
+
+(define/contract (make-message body)
+  (hash? . -> . hash?)
+  (hash 'body body))
 
 (define (make-response input . additional-body)
   (hash 'body (make-immutable-hasheq
@@ -94,11 +117,22 @@
                   (match (thread-receive)
                     [(Input msg)
                      (define dispatched-thread (dispatch node msg))
-                     (loop (cons dispatched-thread dispatched)
-                           done-with-inputs)]
+                     (if dispatched-thread
+                         (loop (cons dispatched-thread dispatched)
+                               done-with-inputs)
+                         (loop dispatched done-with-inputs))]
                     
                     [(Output msg)
                      (write-msg node msg)
+                     (loop dispatched done-with-inputs)]
+
+                    [(Rpc msg response-handler)
+                     ; leaky abstraction of write-msg previously incrementing the
+                     ; message send id, but now Rpc requires it to be known before.
+                     (define next-id (add1 (node-msg-id node)))
+                     (set-node-msg-id! node next-id) 
+                     (hash-set! (node-rpc-handlers node) next-id response-handler)
+                     (write-msg-int next-id msg)
                      (loop dispatched done-with-inputs)])))
                
                
@@ -120,11 +154,10 @@
 (define (write-msg-int id msg)
   (define js (hash-set msg 'body
                        (hash-set (message-body msg) 'msg_id id)))
-  (log-maelstrom-debug "Writing ~v" js)
-  (write-json
-   js)
+  (write-json js)
   (newline)
-  (flush-output))
+  (flush-output)
+  (log-maelstrom-debug "~v: Wrote ~v" (current-inexact-monotonic-milliseconds) js))
 
 (define (write-msg node msg)
   (define next-id (add1 (node-msg-id node)))
@@ -138,9 +171,9 @@
        (define m (read-json))
        (if (eof-object? m)
            (begin
-             (log-maelstrom-debug "Received EOF on input. Stopping reader thread."))
+             (log-maelstrom-debug "~v: Received EOF on input. Stopping reader thread." (current-inexact-monotonic-milliseconds)))
            (begin
-             (log-maelstrom-debug "Got new input ~v" m)
+             (log-maelstrom-debug "~v: Got new input ~v" (current-inexact-monotonic-milliseconds) m)
              (thread-send main-thread (Input m))
              (loop)))))))
 
@@ -151,10 +184,22 @@
 (define (add-dest response dest)
   (hash-set response 'dest dest))
 
-(define (dispatch node message)
-  (-> node? message? void)
-  (log-maelstrom-debug "Dispatching on (expecting responses) ~v" (current-thread))
-  (define handler (hash-ref (node-handlers node) (message-type message)))
+(define (rpc-response? msg)
+  (string-suffix? (message-type msg) "_ok"))
+
+(define (remove-and-get-rpc-handler node msg-id)
+  (define response-handler (hash-ref (node-rpc-handlers node) msg-id #f))
+  (hash-remove! (node-rpc-handlers node) msg-id)
+  response-handler)
+
+(define (find-handler node msg)
+  ; regular handlers are returned directly
+  ; RPC handlers are removed from the hash table.
+  (if (rpc-response? msg)
+      (remove-and-get-rpc-handler node (message-ref msg 'in_reply_to))
+      (hash-ref (node-handlers node) (message-type msg))))
+
+(define (dispatch-handler node message handler)
   ; This custodian isn't used for anything right now, but
   ; could be used to time out handlers.
   (define cust (make-custodian))
@@ -162,7 +207,6 @@
                  [current-node node]
                  [current-node-main-thread (current-thread)]
                  [current-input-msg message])
-    (log-maelstrom-debug "Dispatching ~v" message)
     (thread
      (lambda()
        (with-handlers
@@ -170,6 +214,14 @@
                          (log-maelstrom-error "Error while dispatching handler ~v for message type ~v" handler (message-type message))
                          (raise e))])
          (handler message))))))
+
+(define (dispatch node message)
+  (-> node? message? void)
+  (define maybe-handler (find-handler node message))
+  (if maybe-handler
+      (dispatch-handler node message maybe-handler)
+    
+      #f))
 
 (define (initialize node)
   ; Initialize. the initialize function is just a handler, but
@@ -312,5 +364,5 @@ EOF
 
       (test-case
        "RPC: Support waiting for a sent message's response"
-       ))
+       (fail "Write this test")))
     #:logger maelstrom-logger 'info)) ; change to 'debug when investigating

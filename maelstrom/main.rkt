@@ -15,8 +15,6 @@
 (require json)
 (require racket/port)
 (require racket/contract)
-(require racket/class)
-(require racket/logging)
 (require racket/list)
 (require racket/match)
 (require racket/string)
@@ -167,8 +165,7 @@
      (let loop ()
        (define m (read-json))
        (if (eof-object? m)
-           (begin
-             (log-maelstrom-debug "~v: Received EOF on input. Stopping reader thread." (current-inexact-monotonic-milliseconds)))
+           (log-maelstrom-debug "~v: Received EOF on input. Stopping reader thread." (current-inexact-monotonic-milliseconds))
            (begin
              (log-maelstrom-debug "~v: Got new input ~v" (current-inexact-monotonic-milliseconds) m)
              (thread-send main-thread (Input m))

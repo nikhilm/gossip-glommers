@@ -1,0 +1,12 @@
+{
+    "src": "c1",
+    "dest": "n3",
+    "body": {
+        "type": "echo",
+        "msg_id": 2,
+        "echo": "Please echo 35"
+    }
+}
+
+
+

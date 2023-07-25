@@ -1,13 +1,13 @@
 #lang racket/base
 
-(require racket/contract)
-
 (provide message?
          message-body
          message-ref
          message-sender
          message-id
          message-type)
+
+(require racket/contract)
 
 (define (message? msg)
   (and (hash? msg)

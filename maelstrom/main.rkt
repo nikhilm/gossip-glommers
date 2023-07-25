@@ -1,19 +1,5 @@
 #lang racket/base
 
-(require json)
-(require racket/port)
-(require racket/contract)
-(require racket/class)
-(require racket/logging)
-(require racket/list)
-(require racket/match)
-(require racket/string)
-
-(require maelstrom/message)
-
-(module+ test
-  (require rackunit))
-
 (provide make-std-node
          add-handler
          run
@@ -25,6 +11,17 @@
          make-response
          node-id
          known-node-ids)
+
+(require json)
+(require racket/port)
+(require racket/contract)
+(require racket/class)
+(require racket/logging)
+(require racket/list)
+(require racket/match)
+(require racket/string)
+
+(require maelstrom/message)
 
 (define-logger maelstrom)
 
@@ -247,29 +244,18 @@
 
 
 (module+ test
+  (require rackunit)
+  
   (with-logging-to-port
       (current-error-port)
     (lambda () 
-      (define INIT_MSG #<<EOF
-{
-  "src": "c1",
-  "dest": "n1",
-  "body": {
-    "type":     "init",
-    "msg_id":   1,
-    "node_id":  "n3",
-    "node_ids": ["n1", "n2", "n3"]
-  }
-}
-EOF
-        )
+      (define INIT_MSG (with-input-from-file
+                           (build-path "test-data" "init-msg.json")
+                         port->string))
+      (define ECHO_MSG (with-input-from-file
+                           (build-path "test-data" "echo-msg.json")
+                         port->string))
 
-      ; this is awkward, but multi-line strings do not allow internal newlines.
-      ; internal newlines are required to validate the input reader is running in
-      ; a separate thread where it is ok for read-json to block. 
-      (define ECHO_MSG "{\"src\": \"c1\",\"dest\": \"n1\",\"body\": {\"type\": \"echo\",\"msg_id\": 2,\"echo\": \"Please echo 35\"}}\n\n\n")
-  
-      
       (test-case
        "Initialization"
 
@@ -280,24 +266,20 @@ EOF
            (define node (make-std-node))
            (check-false (node-id node))))
 
-       (with-input-from-string INIT_MSG
-         (lambda ()
-           (define output
+       (define output
+         (with-input-from-file (build-path "test-data" "init-msg.json")
+           (lambda ()
              (with-output-to-string
                (lambda ()
                  (define node (make-std-node))
                  (check-equal? (known-node-ids node) null)
                  (run node)
                  (check-equal? (node-id node) "n3")
-                 (check-equal? (known-node-ids node) (list "n1" "n2")))))
-           (define msg (string->jsexpr output))
-           (check-match msg
-                        (hash-table
-                         ('src "n3")
-                         ('dest "c1")
-                         ('body (hash-table
-                                 ('in_reply_to 1)
-                                 ('type "init_ok"))))))))
+                 (check-equal? (known-node-ids node) (list "n1" "n2")))))))
+       (define actual-response (string->jsexpr output))
+       (check-equal? actual-response
+                     (with-input-from-file (build-path "test-data" "expected-init-response.json")
+                       read-json)))
 
       (test-case
        "Echo does not hang"
@@ -351,18 +333,48 @@ EOF
 
       (test-case
        "If a handler throws an exception, it is logged, but run still exits"
-       (parameterize ([current-output-port (open-output-nowhere)])
-         (with-input-from-string
-             (string-append INIT_MSG ECHO_MSG)
-           (lambda ()
-             (define node (make-std-node))
-             (add-handler node
-                          "echo"
-                          (lambda (req)
-                            (error "Intentional error")))
-             (run node)))))
+       (define node
+         (parameterize ([current-output-port (open-output-nowhere)])
+           (with-input-from-string
+               (string-append INIT_MSG ECHO_MSG)
+             make-std-node)))
+       (add-handler node
+                    "echo"
+                    (lambda (req)
+                      (error "Intentional error")))
+       (run node))
 
       (test-case
        "RPC: Support waiting for a sent message's response"
-       (fail "Write this test")))
+       (define-values (read-end write-end) (make-pipe))
+       (define-values (out-read-end out-write-end) (make-pipe))
+
+       (define waiter (make-semaphore 0))
+       (define node
+         (parameterize ([current-input-port read-end]
+                        [current-output-port out-write-end])
+           (make-std-node)))
+         
+       (add-handler node
+                    "echo"
+                    (lambda (req)
+                      (rpc
+                       "c1"
+                       (make-message (hash 'type "greet" 'name "nikhil"))
+                       (lambda (_) (semaphore-post waiter)))))
+
+       (thread
+        (lambda ()
+          (write-string (string-append INIT_MSG ECHO_MSG) write-end)
+          (read-json out-read-end)
+          (check-equal? (message-type (read-json out-read-end)) "greet")
+          (write-json #hasheq((src . "c1")
+                              (dest . "n3")
+                              (body . #hasheq((type . "greet_ok")
+                                              (message . "Hello Nikhil!")
+                                              (in_reply_to . 2)))) write-end)
+          ; wait for the rpc handler to be invoked.
+          (semaphore-wait waiter)
+          (close-output-port write-end)))
+       (run node)))
     #:logger maelstrom-logger 'info)) ; change to 'debug when investigating

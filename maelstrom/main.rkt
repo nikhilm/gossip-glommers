@@ -246,135 +246,132 @@
 (module+ test
   (require rackunit)
   
-  (with-logging-to-port
-      (current-error-port)
-    (lambda () 
-      (define INIT_MSG (with-input-from-file
-                           (build-path "test-data" "init-msg.json")
-                         port->string))
-      (define ECHO_MSG (with-input-from-file
-                           (build-path "test-data" "echo-msg.json")
-                         port->string))
+  
+  (define INIT_MSG (with-input-from-file
+                       (build-path "test-data" "init-msg.json")
+                     port->string))
+  (define ECHO_MSG (with-input-from-file
+                       (build-path "test-data" "echo-msg.json")
+                     port->string))
 
-      (test-case
-       "Initialization"
+  (test-case
+   "Initialization"
 
-       ; EOF leads to no initialization
-       (with-input-from-string
-           ""
-         (lambda ()
-           (define node (make-std-node))
-           (check-false (node-id node))))
+   ; EOF leads to no initialization
+   (with-input-from-string
+       ""
+     (lambda ()
+       (define node (make-std-node))
+       (check-false (node-id node))))
 
-       (define output
-         (with-input-from-file (build-path "test-data" "init-msg.json")
+   (define output
+     (with-input-from-file (build-path "test-data" "init-msg.json")
+       (lambda ()
+         (with-output-to-string
            (lambda ()
-             (with-output-to-string
-               (lambda ()
-                 (define node (make-std-node))
-                 (check-equal? (known-node-ids node) null)
-                 (run node)
-                 (check-equal? (node-id node) "n3")
-                 (check-equal? (known-node-ids node) (list "n1" "n2")))))))
-       (define actual-response (string->jsexpr output))
-       (check-equal? actual-response
-                     (with-input-from-file (build-path "test-data" "expected-init-response.json")
-                       read-json)))
+             (define node (make-std-node))
+             (check-equal? (known-node-ids node) null)
+             (run node)
+             (check-equal? (node-id node) "n3")
+             (check-equal? (known-node-ids node) (list "n1" "n2")))))))
+   (define actual-response (string->jsexpr output))
+   (check-equal? actual-response
+                 (with-input-from-file (build-path "test-data" "expected-init-response.json")
+                   read-json)))
 
-      (test-case
-       "Echo does not hang"
-       (define-values (read-end write-end) (make-pipe))
-       (define-values (out-read-end out-write-end) (make-pipe))
-       (define sem (make-semaphore))
-       (thread
-        (lambda ()
-          (write-string INIT_MSG write-end)
-          (write-string ECHO_MSG write-end)
-          ; wait until the main thread acknowledges it received a response.
-          (semaphore-wait sem)
+  (test-case
+   "Echo does not hang"
+   (define-values (read-end write-end) (make-pipe))
+   (define-values (out-read-end out-write-end) (make-pipe))
+   (define sem (make-semaphore))
+   (thread
+    (lambda ()
+      (write-string INIT_MSG write-end)
+      (write-string ECHO_MSG write-end)
+      ; wait until the main thread acknowledges it received a response.
+      (semaphore-wait sem)
           
-          (write-string ECHO_MSG write-end)
-          (close-output-port write-end)))
+      (write-string ECHO_MSG write-end)
+      (close-output-port write-end)))
 
-       (thread
-        (lambda ()
-          (after (check-match (read-json out-read-end)
-                              (hash-table
-                               ('src _)
-                               ('dest _)
-                               ('body (hash-table
-                                       ('in_reply_to _)
-                                       ('type "init_ok")))))
-                 (check-match (read-json out-read-end)
-                              (hash-table
-                               ('src _)
-                               ('dest _)
-                               ('body (hash-table
-                                       ('in_reply_to _)
-                                       ('type "echo_ok")))))
-                 (semaphore-post sem))
-          (check-match (read-json out-read-end)
-                       (hash-table
-                        ('src _)
-                        ('dest _)
-                        ('body (hash-table
-                                ('in_reply_to _)
-                                ('type "echo_ok")))))))
+   (thread
+    (lambda ()
+      (after (check-match (read-json out-read-end)
+                          (hash-table
+                           ('src _)
+                           ('dest _)
+                           ('body (hash-table
+                                   ('in_reply_to _)
+                                   ('type "init_ok")))))
+             (check-match (read-json out-read-end)
+                          (hash-table
+                           ('src _)
+                           ('dest _)
+                           ('body (hash-table
+                                   ('in_reply_to _)
+                                   ('type "echo_ok")))))
+             (semaphore-post sem))
+      (check-match (read-json out-read-end)
+                   (hash-table
+                    ('src _)
+                    ('dest _)
+                    ('body (hash-table
+                            ('in_reply_to _)
+                            ('type "echo_ok")))))))
        
-       (parameterize ([current-input-port read-end]
-                      [current-output-port out-write-end])
-         (define node (make-std-node))
-         (add-handler node
-                      "echo"
-                      (lambda (req)
-                        (check-equal? (known-node-ids) (list "n1" "n2"))
-                        (respond (make-response req `(echo . ,(message-ref req 'echo))))))
-         (run node)))
+   (parameterize ([current-input-port read-end]
+                  [current-output-port out-write-end])
+     (define node (make-std-node))
+     (add-handler node
+                  "echo"
+                  (lambda (req)
+                    (check-equal? (known-node-ids) (list "n1" "n2"))
+                    (respond (make-response req `(echo . ,(message-ref req 'echo))))))
+     (run node)))
 
-      (test-case
-       "If a handler throws an exception, it is logged, but run still exits"
-       (define node
-         (parameterize ([current-output-port (open-output-nowhere)])
-           (with-input-from-string
-               (string-append INIT_MSG ECHO_MSG)
-             make-std-node)))
-       (add-handler node
-                    "echo"
-                    (lambda (req)
-                      (error "Intentional error")))
-       (run node))
+  (test-case
+   "If a handler throws an exception, it is logged, but run still exits"
+   (define node
+     (parameterize ([current-output-port (open-output-nowhere)])
+       (with-input-from-string
+           (string-append INIT_MSG ECHO_MSG)
+         make-std-node)))
+   (add-handler node
+                "echo"
+                (lambda (req)
+                  (error "Intentional error")))
+   (run node))
 
-      (test-case
-       "RPC: Support waiting for a sent message's response"
-       (define-values (read-end write-end) (make-pipe))
-       (define-values (out-read-end out-write-end) (make-pipe))
+  (test-case
+   "RPC: Support waiting for a sent message's response"
+   (define-values (read-end write-end) (make-pipe))
+   (define-values (out-read-end out-write-end) (make-pipe))
 
-       (define waiter (make-semaphore 0))
-       (define node
-         (parameterize ([current-input-port read-end]
-                        [current-output-port out-write-end])
-           (make-std-node)))
+   (define waiter (make-semaphore 0))
+   (define node
+     (parameterize ([current-input-port read-end]
+                    [current-output-port out-write-end])
+       (make-std-node)))
          
-       (add-handler node
-                    "echo"
-                    (lambda (req)
-                      (rpc
-                       "c1"
-                       (make-message (hash 'type "greet" 'name "nikhil"))
-                       (lambda (_) (semaphore-post waiter)))))
+   (add-handler node
+                "echo"
+                (lambda (req)
+                  (rpc
+                   "c1"
+                   (make-message (hash 'type "greet" 'name "nikhil"))
+                   (lambda (_) (semaphore-post waiter)))))
 
-       (thread
-        (lambda ()
-          (write-string (string-append INIT_MSG ECHO_MSG) write-end)
-          (read-json out-read-end)
-          (check-equal? (message-type (read-json out-read-end)) "greet")
-          (write-json #hasheq((src . "c1")
-                              (dest . "n3")
-                              (body . #hasheq((type . "greet_ok")
-                                              (message . "Hello Nikhil!")
-                                              (in_reply_to . 2)))) write-end)
-          ; wait for the rpc handler to be invoked.
-          (semaphore-wait waiter)
-          (close-output-port write-end)))
-       (run node)))
-    #:logger maelstrom-logger 'info)) ; change to 'debug when investigating
+   (thread
+    (lambda ()
+      (write-string (string-append INIT_MSG ECHO_MSG) write-end)
+      (read-json out-read-end)
+      (check-equal? (message-type (read-json out-read-end)) "greet")
+      (write-json #hasheq((src . "c1")
+                          (dest . "n3")
+                          (body . #hasheq((type . "greet_ok")
+                                          (message . "Hello Nikhil!")
+                                          (in_reply_to . 2)))) write-end)
+      ; wait for the rpc handler to be invoked.
+      (semaphore-wait waiter)
+      (close-output-port write-end)))
+   (run node)))

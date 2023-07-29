@@ -66,4 +66,29 @@
    (respond (make-response req))))
 
 (module+ main
-  (run node))
+  (require profile)
+  (require profile/render-json)
+  (require profile/render-text)
+  (require json)
+  (require racket/file)
+
+  #;(lambda (profile-data)
+              (log-broadcast-info "HEHERERE")
+              ; this is never called?
+              (define fn (make-temporary-file* #"rktprofile" #".json"))
+              (with-output-to-file
+                  fn
+                (lambda () (write-json (profile->json profile-data))
+                  (log-broadcast-info "Saved profile to ~v" fn))
+                #:exists 'append))
+
+  (define stderr-renderer
+    (lambda (profile-data order)
+      (parameterize ([current-output-port (current-error-port)])
+        (render profile-data order))))
+  
+  (profile-thunk
+   (lambda () (with-handlers ([exn:break? (lambda (x) void)]) (run node)))
+   #:threads #t
+   ; TODO: Pasa a periodic renderer since we can't do anything about sigkill
+   #:render stderr-renderer))

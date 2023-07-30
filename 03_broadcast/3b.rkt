@@ -27,22 +27,24 @@
  node
  "broadcast"
  (lambda (req)
+   (define value (message-ref req 'message))
    (define updated
-     (call-with-semaphore storage-sema
-                          (lambda ()
-                            (if (member (message-ref req 'message) storage)
-                                #f
-                                (begin
-                                  (set! storage (cons (message-ref req 'message) storage))
-                                  (log-broadcast-debug "~v Update known values ~v" (current-inexact-monotonic-milliseconds) storage)
-                                  #t)))))
+     (call-with-semaphore
+      storage-sema
+      (lambda ()
+        (if (member value storage)
+            #f
+            (begin
+              (set! storage (cons value storage))
+              (log-broadcast-debug "~v Update known values ~v" (current-inexact-monotonic-milliseconds) storage)
+              #t)))))
    (respond (make-response req))
    (when updated
      (for ([peer (in-list (known-node-ids))]
            #:when (not (equal? peer (message-sender req))))
        (send peer
              (make-message
-              (hash 'message (message-ref req 'message)
+              (hash 'message value
                     'type "broadcast")))))
    ))
 
@@ -51,12 +53,13 @@
  "read"
  (lambda (req)
    (log-broadcast-debug "~v read request" (current-inexact-monotonic-milliseconds))
+   (define response (call-with-semaphore
+                     storage-sema
+                     ; make a copy of the list.
+                     (lambda () (map values storage))))
    (respond
     (make-response req
-                   `(messages . ,(call-with-semaphore
-                                  storage-sema
-                                  ; make a copy of the list.
-                                  (lambda () (map values storage))))))))
+                   `(messages . ,response)))))
 
 (add-handler
  node

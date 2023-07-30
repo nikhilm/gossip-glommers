@@ -4,6 +4,7 @@
 
 (define-logger broadcast)
 (define node (make-std-node))
+(define peers (box null))
 
 (struct Add (resp-ch value))
 (struct Get (resp-ch))
@@ -35,7 +36,7 @@
    (define updated (channel-get ch))
    
    (when updated
-     (for ([peer (in-list (known-node-ids))]
+     (for ([peer (in-list (unbox peers))]
            #:when (not (equal? peer sender)))
        (send peer
              (make-message
@@ -54,12 +55,27 @@
     (make-response req
                    `(messages . ,(channel-get ch))))))
 
-; TODO: use the actual topology
 (add-handler
  node
  "topology"
  (lambda (req)
-   ; Nothing to be done for now.
-   (respond (make-response req))))
+   (respond (make-response req))
+               
+   ; Exit the process on failure to avoid incorrect behavior.       
+   (with-handlers
+       ([exn:fail?
+         (λ (e)
+           (log-broadcast-error "Error reading topology. Exiting! Error was: ~v" e)
+           (exit 1))])
+                 
+     (define the-peers (hash-ref (message-ref req 'topology)
+                                 (string->symbol (node-id node))))
+     ; try updating the peer list 5 times to deal with potential spurious failures.
+     ; for/or stops the first time the body is #t, and returns #f otherwise.
+     ; box-cas! returns #t when the swap succeeds.
+     (unless (for/or ([_ (in-range 5)])
+               (box-cas! peers null the-peers))
+       (error 'topology-handler "unable to box-cas! peers list after several attempts"))
+     (log-broadcast-debug "my peers are ~v" the-peers))))
 
 (module+ main (run node))

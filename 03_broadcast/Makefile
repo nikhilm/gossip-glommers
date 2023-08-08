@@ -11,3 +11,6 @@ all: 3a 3b 3c
 3c: 3c.rkt ../maelstrom/*.rkt
 	raco make 3c.rkt
 	raco exe 3c.rkt
+
+3c-test: 3c
+	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3c --node-count 5 --time-limit 20 --rate 10 --nemesis partition

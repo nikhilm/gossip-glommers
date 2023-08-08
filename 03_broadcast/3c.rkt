@@ -36,13 +36,23 @@
    (define updated (channel-get ch))
    
    (when updated
-     (for ([peer (in-list (unbox peers))]
-           #:when (not (equal? peer sender)))
-       (send peer
-             (make-message
-              (hash 'message value
-                    'type "broadcast")))))
-   ))
+     (define unacked (list->mutable-set
+                      (for/list ([peer (in-list (unbox peers))]
+                                 #:when (not (equal? peer sender)))
+                        peer)))
+     (let loop ([i 1])
+       (log-broadcast-debug "Unacked peers for ~v are ~v~n" value unacked)
+       (unless (set-empty? unacked)
+         (for ([peer (in-set unacked)])
+           (rpc peer (make-message
+                      (hash 'message value
+                            'type "broadcast"))
+                (lambda (response)
+                  ; TODO assert response is actually broadcast_ok.
+                  (log-broadcast-debug "val: ~v iter: ~v: Got a response from ~v~n" value i (message-sender response))
+                  (set-remove! unacked (message-sender response)))))
+         (sleep 0.1)
+         (loop (add1 i)))))))
 
 (add-handler
  node

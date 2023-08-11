@@ -5,7 +5,8 @@
          message-ref
          message-sender
          message-id
-         message-type)
+         message-type
+         make-message)
 
 (require racket/contract)
 
@@ -31,6 +32,9 @@
   (-> message? string?)
   (message-ref msg 'type))
 
+(define/contract (make-message body)
+  (hash? . -> . hash?)
+  (hash 'body body))
 
 (module+ test
   (require json)

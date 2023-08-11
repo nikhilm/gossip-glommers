@@ -1,25 +1,22 @@
 #lang racket/base
 
-(provide make-std-node
+(provide make-node
          add-handler
          run
          rpc
          send
          respond
-         message-ref
-         make-message
          make-response
          node-id
          known-node-ids)
 
-(require json)
-(require racket/port)
-(require racket/contract)
-(require racket/list)
-(require racket/match)
-(require racket/string)
-
-(require maelstrom/message)
+(require json
+         maelstrom/message
+         racket/contract
+         racket/list
+         racket/match
+         racket/port
+         racket/string)
 
 (define-logger maelstrom)
 
@@ -29,12 +26,9 @@
 (define current-input-msg (make-parameter #f))
 (define current-node-main-thread (make-parameter #f))
 
-
 (struct node
   ([id #:mutable]
    handlers
-   in
-   out
    [other-nodes #:mutable]
    [msg-id #:mutable]
    ; hash table from `in_reply_to` integer to a callback
@@ -44,9 +38,9 @@
 (struct Input (message))
 (struct Rpc (message response-handler))
 
-(define/contract (make-std-node)
+(define/contract (make-node)
   (-> node?)
-  (node #f (make-hash) (current-input-port) (current-output-port) null 0 (make-hasheqv)))
+  (node #f (make-hash) null 0 (make-hasheqv)))
 
 (define/contract (respond response)
   (-> any/c void)
@@ -67,10 +61,6 @@
     (error "Cannot call send outside the execution context of a handler"))
   (define with-deets (add-dest (add-src msg) dest))
   (thread-send (current-node-main-thread) (Rpc with-deets response-handler)))
-
-(define/contract (make-message body)
-  (hash? . -> . hash?)
-  (hash 'body body))
 
 (define (make-response input . additional-body)
   (hash 'body (make-immutable-hasheq
@@ -93,9 +83,7 @@
 (define/contract (run node)
   (-> node? void)
   (define main-cust (make-custodian))
-  (parameterize ([current-custodian main-cust]
-                 [current-input-port (node-in node)]
-                 [current-output-port (node-out node)])
+  (parameterize ([current-custodian main-cust])
     (initialize node)
 
     (define reader-thread (spawn-reader-thread (current-thread)))
@@ -125,10 +113,7 @@
                      (loop dispatched done-with-inputs)]
 
                     [(Rpc msg response-handler)
-                     ; leaky abstraction of write-msg previously incrementing the
-                     ; message send id, but now Rpc requires it to be known before.
-                     (define next-id (add1 (node-msg-id node)))
-                     (set-node-msg-id! node next-id) 
+                     (define next-id (next-outgoing-id node))
                      (hash-set! (node-rpc-handlers node) next-id response-handler)
                      (write-msg-int next-id msg)
                      (loop dispatched done-with-inputs)])))
@@ -157,23 +142,22 @@
   (flush-output)
   (log-maelstrom-debug "~v: Wrote ~v" (current-inexact-monotonic-milliseconds) js))
 
-(define (write-msg node msg)
+(define (next-outgoing-id node)
   (define next-id (add1 (node-msg-id node)))
   (set-node-msg-id! node next-id)
-  (write-msg-int next-id msg))
+  next-id)
+
+(define (write-msg node msg)
+  (write-msg-int (next-outgoing-id node) msg))
 
 (define (spawn-reader-thread main-thread)
   (thread
    (lambda ()
-     (let loop ()
-       (define m (read-json))
-       (if (eof-object? m)
-           (log-maelstrom-debug "~v: Received EOF on input. Stopping reader thread." (current-inexact-monotonic-milliseconds))
-           (begin
-             (log-maelstrom-debug "~v: Got new input ~v" (current-inexact-monotonic-milliseconds) m)
-             (thread-send main-thread (Input m))
-             (loop)))))))
-
+     (for ([input-msg (in-port read-json)])
+       (log-maelstrom-debug "~v: Got new input ~v" (current-inexact-monotonic-milliseconds) input-msg)
+       (thread-send main-thread (Input input-msg)))
+     
+     (log-maelstrom-debug "~v: Received EOF on input. Stopping reader thread." (current-inexact-monotonic-milliseconds)))))
 
 (define (add-src response)
   (hash-set response 'src (node-id (current-node))))
@@ -205,22 +189,22 @@
                  [current-node-main-thread (current-thread)]
                  [current-input-msg message])
     (thread
-     (lambda()
+     (lambda ()
        (with-handlers
            ([exn:fail? (lambda (e)
                          (log-maelstrom-error "Error while dispatching handler ~v for message type ~v" handler (message-type message))
                          (raise e))])
          (handler message))))))
 
-(define (dispatch node message)
-  (-> node? message? void)
+(define/contract (dispatch node message)
+  (-> node? message? (or/c thread? #f))
   (define maybe-handler (find-handler node message))
   (if maybe-handler
       (dispatch-handler node message maybe-handler)
-    
       #f))
 
-(define (initialize node)
+(define/contract (initialize node)
+  (-> node? void)
   ; Initialize. the initialize function is just a handler, but
   ; we block on reading the response instead of running it concurrently.
   (add-handler node "init" initialize-handler)
@@ -229,13 +213,14 @@
       (dispatch node msg)))
   ; this is not very robust, since if init is not the first
   ; message sent, then we will dispatch on the wrong handler
-  (match (thread-receive)
-    [(Output msg) (write-msg node msg)])
+  (match-let ([(Output msg) (thread-receive)])
+    (write-msg node msg))
 
   (unless (node-id node)
     (error "node id unset. not initialized?")))
 
-(define (initialize-handler msg)
+(define/contract (initialize-handler msg)
+  (-> message? void)
   (when (node-id (current-node))
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
@@ -244,7 +229,8 @@
 
 
 (module+ test
-  (require rackunit)
+  (require rackunit
+           racket/function)
   
   
   (define INIT_MSG (with-input-from-file
@@ -261,7 +247,7 @@
    (with-input-from-string
        ""
      (lambda ()
-       (define node (make-std-node))
+       (define node (make-node))
        (check-false (node-id node))))
 
    (define output
@@ -269,7 +255,7 @@
        (lambda ()
          (with-output-to-string
            (lambda ()
-             (define node (make-std-node))
+             (define node (make-node))
              (check-equal? (known-node-ids node) null)
              (run node)
              (check-equal? (node-id node) "n3")
@@ -321,7 +307,7 @@
        
    (parameterize ([current-input-port read-end]
                   [current-output-port out-write-end])
-     (define node (make-std-node))
+     (define node (make-node))
      (add-handler node
                   "echo"
                   (lambda (req)
@@ -331,16 +317,15 @@
 
   (test-case
    "If a handler throws an exception, it is logged, but run still exits"
-   (define node
-     (parameterize ([current-output-port (open-output-nowhere)])
-       (with-input-from-string
-           (string-append INIT_MSG ECHO_MSG)
-         make-std-node)))
+   (define node (make-node))
    (add-handler node
                 "echo"
                 (lambda (req)
                   (error "Intentional error")))
-   (run node))
+   (parameterize ([current-output-port (open-output-nowhere)])
+     (with-input-from-string
+         (string-append INIT_MSG ECHO_MSG)
+       (thunk (run node)))))
 
   (test-case
    "RPC: Support waiting for a sent message's response"
@@ -348,10 +333,8 @@
    (define-values (out-read-end out-write-end) (make-pipe))
 
    (define waiter (make-semaphore 0))
-   (define node
-     (parameterize ([current-input-port read-end]
-                    [current-output-port out-write-end])
-       (make-std-node)))
+   (define node (make-node))
+
          
    (add-handler node
                 "echo"
@@ -374,4 +357,6 @@
       ; wait for the rpc handler to be invoked.
       (semaphore-wait waiter)
       (close-output-port write-end)))
-   (run node)))
+   (parameterize ([current-input-port read-end]
+                  [current-output-port out-write-end])
+     (run node))))

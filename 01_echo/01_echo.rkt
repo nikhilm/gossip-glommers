@@ -1,8 +1,9 @@
 #lang racket
-(require maelstrom)
+(require maelstrom
+         maelstrom/message)
 
 (module+ main
-  (define node (make-std-node))
+  (define node (make-node))
   (add-handler node
                "echo"
                (lambda (req)

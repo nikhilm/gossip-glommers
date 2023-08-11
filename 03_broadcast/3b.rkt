@@ -21,7 +21,7 @@
 
 (define storage null)
 (define storage-sema (make-semaphore 1))
-(define node (make-std-node))
+(define node (make-node))
 
 (add-handler
  node

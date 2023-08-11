@@ -3,7 +3,7 @@
 (require maelstrom/message)
 
 (define-logger broadcast)
-(define node (make-std-node))
+(define node (make-node))
 (define peers (box null))
 
 (struct Add (resp-ch value))
@@ -42,6 +42,7 @@
                         peer)))
      ; This impl, when used in 3d (25 nodes and added latency)
      ; does not yet perform as well as required.
+     ; Too many broadcast messages are sent per op, and max latencies are higher.
      (let loop ([i 1])
        (log-broadcast-debug "Unacked peers for ~v are ~v~n" value unacked)
        (unless (set-empty? unacked)

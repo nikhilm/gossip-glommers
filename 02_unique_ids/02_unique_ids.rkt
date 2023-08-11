@@ -10,7 +10,7 @@
         (loop))))
 
 (module+ main
-  (define node (make-std-node))
+  (define node (make-node))
   (define id-box (box 0))
   (add-handler
    node

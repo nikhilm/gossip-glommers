@@ -40,6 +40,8 @@
                       (for/list ([peer (in-list (unbox peers))]
                                  #:when (not (equal? peer sender)))
                         peer)))
+     ; This impl, when used in 3d (25 nodes and added latency)
+     ; does not yet perform as well as required.
      (let loop ([i 1])
        (log-broadcast-debug "Unacked peers for ~v are ~v~n" value unacked)
        (unless (set-empty? unacked)

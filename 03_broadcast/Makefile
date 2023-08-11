@@ -14,3 +14,6 @@ all: 3a 3b 3c
 
 3c-test: 3c
 	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3c --node-count 5 --time-limit 20 --rate 10 --nemesis partition
+
+3d-test: 3c
+	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3c --node-count 25 --time-limit 20 --rate 100 --latency 100

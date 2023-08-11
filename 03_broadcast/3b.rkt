@@ -40,7 +40,7 @@
               #t)))))
    (respond (make-response req))
    (when updated
-     (for ([peer (in-list (known-node-ids))]
+     (for ([peer (in-list (known-peers))]
            #:when (not (equal? peer (message-sender req))))
        (send peer
              (make-message

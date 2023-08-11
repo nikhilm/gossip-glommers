@@ -7,8 +7,9 @@
          send
          respond
          make-response
+         node?
          node-id
-         known-node-ids)
+         known-peers)
 
 (require json
          maelstrom/message
@@ -29,7 +30,7 @@
 (struct node
   ([id #:mutable]
    handlers
-   [other-nodes #:mutable]
+   [peers #:mutable]
    [msg-id #:mutable]
    ; hash table from `in_reply_to` integer to a callback
    rpc-handlers))
@@ -72,13 +73,13 @@
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
 
-(define known-node-ids
+(define known-peers
   (case-lambda
-    [() (node-other-nodes (current-node))]
+    [() (node-peers (current-node))]
     [(n)
      (unless (node? n)
-       (raise-argument-error 'known-node-ids "node?" n))
-     (node-other-nodes n)]))
+       (raise-argument-error 'known-peers "node?" n))
+     (node-peers n)]))
 
 (define/contract (run node)
   (-> node? void)
@@ -224,7 +225,7 @@
   (when (node-id (current-node))
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
-  (set-node-other-nodes! (current-node) (remove (message-ref msg 'node_id) (message-ref msg 'node_ids)))
+  (set-node-peers! (current-node) (remove (message-ref msg 'node_id) (message-ref msg 'node_ids)))
   (respond (make-response msg)))
 
 
@@ -256,10 +257,10 @@
          (with-output-to-string
            (lambda ()
              (define node (make-node))
-             (check-equal? (known-node-ids node) null)
+             (check-equal? (known-peers node) null)
              (run node)
              (check-equal? (node-id node) "n3")
-             (check-equal? (known-node-ids node) (list "n1" "n2")))))))
+             (check-equal? (known-peers node) (list "n1" "n2")))))))
    (define actual-response (string->jsexpr output))
    (check-equal? actual-response
                  (with-input-from-file (build-path "test-data" "expected-init-response.json")
@@ -311,7 +312,7 @@
      (add-handler node
                   "echo"
                   (lambda (req)
-                    (check-equal? (known-node-ids) (list "n1" "n2"))
+                    (check-equal? (known-peers) (list "n1" "n2"))
                     (respond (make-response req `(echo . ,(message-ref req 'echo))))))
      (run node)))
 

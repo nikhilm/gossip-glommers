@@ -1,4 +1,5 @@
 #lang racket
+(require racket/random)
 (require maelstrom)
 (require maelstrom/message)
 
@@ -57,9 +58,13 @@
          (λ (e)
            (log-broadcast-error "Error reading topology. Exiting! Error was: ~v" e)
            (exit 1))])
-                 
-     (define the-peers (hash-ref (message-ref req 'topology)
-                                 (string->symbol (node-id node))))
+
+     (define (not-me el)
+       (define as-str (symbol->string el))
+       (and (not (equal? as-str (node-id node))) as-str))
+     (define all-nodes (filter-map not-me (hash-keys (message-ref req 'topology))))
+     ; choose n/2+1 nodes as peers
+     (define the-peers (random-sample all-nodes (+ 1 (quotient (length all-nodes) 2)) #:replacement? #f))
      (log-broadcast-debug "my peers are ~v" the-peers)
      (for ([peer (in-list the-peers)])
        (set! peer-threads

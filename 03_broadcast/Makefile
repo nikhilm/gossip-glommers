@@ -21,3 +21,6 @@ all: 3a 3b 3c
 
 3d-test: 3d
 	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3d --node-count 25 --time-limit 20 --rate 100 --latency 100
+
+3d-test-partition: 3d
+	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3d --node-count 25 --time-limit 20 --rate 100 --latency 100 --nemesis partition

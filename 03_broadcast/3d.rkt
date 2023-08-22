@@ -66,20 +66,21 @@
      ; choose n/2+1 nodes as peers
      (define the-peers (random-sample all-nodes (+ 1 (quotient (length all-nodes) 2)) #:replacement? #f))
      (log-broadcast-debug "my peers are ~v" the-peers)
+     (define interval (string->number (getenv "INTERVAL_MS")))
      (for ([peer (in-list the-peers)])
        (set! peer-threads
-             (cons (spawn-minder peer) peer-threads))))))
+             (cons (spawn-minder peer interval) peer-threads))))))
 
 (define (timer-evt ms)
   (alarm-evt (+ (current-inexact-monotonic-milliseconds) ms) #|monotonic =|# #t))
 
-(define/contract (spawn-minder peer)
-  (string? . -> . thread?)
+(define/contract (spawn-minder peer propagate-interval-ms)
+  (string? number? . -> . thread?)
   (thread
    (lambda ()
      (define ack-channel (make-channel))
      (define (interval-from-now)
-       (+ 250 (current-inexact-monotonic-milliseconds)))
+       (+ propagate-interval-ms (current-inexact-monotonic-milliseconds)))
      
      ; sadly messages is both a copy of the global messages
      ; and sent also eventually becomes a copy.

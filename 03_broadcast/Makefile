@@ -19,8 +19,19 @@ all: 3a 3b 3c
 3c-test: 3c
 	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3c --node-count 5 --time-limit 20 --rate 10 --nemesis partition
 
+base_args = PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3d --node-count 25 --time-limit 20 --rate 100 --latency 100
+3d_base_args = INTERVAL_MS=250 $(base_args)
+
 3d-test: 3d
-	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3d --node-count 25 --time-limit 20 --rate 100 --latency 100
+	$(3d_base_args)
 
 3d-test-partition: 3d
-	PLTSTDERR="debug@broadcast" $(HOME)/maelstrom/maelstrom test -w broadcast --bin $(PWD)/3d --node-count 25 --time-limit 20 --rate 100 --latency 100 --nemesis partition
+	$(3d_base_args) --nemesis partition
+
+3e_base_args = INTERVAL_MS=500 $(base_args)
+
+3e-test: 3d
+	$(3e_base_args)
+
+3e-test-partition: 3d
+	$(3e_base_args) --nemesis partition

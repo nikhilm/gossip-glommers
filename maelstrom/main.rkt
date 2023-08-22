@@ -44,13 +44,13 @@
   (node #f (make-hash) null 0 (make-hasheqv)))
 
 (define/contract (respond response)
-  (-> any/c void)
+  (-> hash? void)
   (when (not (current-input-msg))
     (error "Cannot call send outside the execution context of a handler"))
   (send (message-sender (current-input-msg)) response))
 
 (define/contract (send dest msg)
-  (-> string? any/c void)
+  (-> string? hash? void)
   (when (not (current-node-main-thread))
     (error "Cannot call send outside the execution context of a handler"))
   (define with-deets (add-dest (add-src msg) dest))
@@ -63,10 +63,10 @@
   (define with-deets (add-dest (add-src msg) dest))
   (thread-send (current-node-main-thread) (Rpc with-deets response-handler)))
 
-(define (make-response input . additional-body)
+(define (make-response request . additional-body)
   (hash 'body (make-immutable-hasheq
-               (append `((type . ,(string-append (message-type input) "_ok"))
-                         (in_reply_to . ,(message-id input)))
+               (append `((type . ,(string-append (message-type request) "_ok"))
+                         (in_reply_to . ,(message-id request)))
                        additional-body))))
 
 (define/contract (add-handler node type handler)

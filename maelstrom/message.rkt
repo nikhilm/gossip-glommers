@@ -39,15 +39,9 @@
 (module+ test
   (require json)
   (require rackunit)
-  
-  (test-case
-   "message validation"
-   (check-false (message? "not-a-jsexpr"))
-   (check-false (message? (string->jsexpr #<<EOF
-{"src": "bazqux", "body": {}}
-EOF
-                                          )))
-   (check-true (message? (string->jsexpr #<<EOF
+  ; TODO: Learn how to use proptest.
+
+  (define valid-msg (string->jsexpr #<<EOF
 {
   "src": "c1",
   "dest": "n1",
@@ -59,4 +53,29 @@ EOF
 }
 
 EOF
-                                         )))))
+                                    
+                                    ))
+  
+  (test-case
+   "message validation"
+   (check-false (message? "not-a-jsexpr"))
+   (check-false (message? (string->jsexpr #<<EOF
+{"src": "bazqux", "body": {}}
+EOF
+                                          )))
+   (check-true (message? valid-msg)))
+
+  (test-case
+   "message access"
+   
+   (check-equal? (message-ref valid-msg 'type) "echo")
+   (check-equal? (message-ref valid-msg 'type) (message-type valid-msg))
+   (check-exn exn:fail? (lambda () (message-ref valid-msg 'does-not-exist)))
+
+   (check-equal? (message-sender valid-msg) "c1")
+   (check-equal? (message-id valid-msg) 1))
+
+  (test-case
+   "message-creation"
+   (check-equal? (make-message #hash((hello . "world") (humming . "bird") (answer . 42)))
+                 #hash((body . #hash((hello . "world") (humming . "bird") (answer . 42)))))))

@@ -16,8 +16,6 @@
    node
    "generate"
    (lambda (req)
-     (respond
-      (make-response
-       req
-       `(id . ,(format "~v_~v" (node-id node) (incr-id id-box)))))))
+     (respond req
+              (hash 'id (format "~v_~v" (node-id node) (incr-id id-box))))))
   (run node))

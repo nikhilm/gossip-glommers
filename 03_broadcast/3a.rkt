@@ -13,25 +13,18 @@
    (call-with-semaphore storage-sema
                         (lambda ()
                           (set! storage (cons (message-ref req 'message) storage))))
-   (respond (make-response req))))
+   (respond req)))
 
 (add-handler
  node
  "read"
  (lambda (req)
    (respond
-    (make-response req
-                   `(messages . ,(call-with-semaphore
-                                                    storage-sema
-                                                    ; make a copy of the list.
-                                                    (lambda () (map values storage))))))))
-
-(add-handler
- node
- "topology"
- (lambda (req)
-   ; Nothing to be done for now.
-   (respond (make-response req))))
+    (to req
+        (hash 'messages (call-with-semaphore
+                         storage-sema
+                         ; make a copy of the list.
+                         (lambda () (map values storage))))))))
 
 (module+ main
   (run node))

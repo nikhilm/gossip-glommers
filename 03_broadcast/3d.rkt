@@ -17,7 +17,7 @@
  (lambda (req)
    (define value (message-ref req 'message))
    (store-and-forward (list value))
-   (respond (make-response req))))
+   (respond req)))
 
 (add-handler
  node
@@ -25,7 +25,7 @@
  (lambda (req)
    (define values (message-ref req 'values))
    (store-and-forward values)
-   (respond (make-response req))))
+   (respond req)))
 
 (define/contract (store-and-forward values)
   ((listof number?) . -> . void)
@@ -42,15 +42,14 @@
    (log-broadcast-debug "~v read request" (current-inexact-monotonic-milliseconds))
    (define ch (make-channel))
    (thread-send state-thread (Get ch))
-   (respond
-    (make-response req
-                   `(messages . ,(channel-get ch))))))
+   (respond req
+            (hash 'messages (channel-get ch)))))
 
 (add-handler
  node
  "topology"
  (lambda (req)
-   (respond (make-response req))
+   (respond req)
                
    ; Exit the process on failure to avoid incorrect behavior.       
    (with-handlers

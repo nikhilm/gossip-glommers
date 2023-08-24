@@ -38,7 +38,7 @@
               (set! storage (cons value storage))
               (log-broadcast-debug "~v Update known values ~v" (current-inexact-monotonic-milliseconds) storage)
               #t)))))
-   (respond (make-response req))
+   (respond req)
    (when updated
      (for ([peer (in-list (known-peers))]
            #:when (not (equal? peer (message-sender req))))
@@ -57,16 +57,8 @@
                      storage-sema
                      ; make a copy of the list.
                      (lambda () (map values storage))))
-   (respond
-    (make-response req
-                   `(messages . ,response)))))
-
-(add-handler
- node
- "topology"
- (lambda (req)
-   ; Nothing to be done for now.
-   (respond (make-response req))))
+   (respond req
+            (hash 'messages response))))
 
 (module+ main
   (require profile)

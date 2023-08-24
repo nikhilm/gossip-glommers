@@ -26,7 +26,7 @@
  node
  "broadcast"
  (lambda (req)
-   (respond (make-response req))
+   (respond req)
    
    (define value (message-ref req 'message))
    (define sender (message-sender req))
@@ -64,15 +64,14 @@
    (log-broadcast-debug "~v read request" (current-inexact-monotonic-milliseconds))
    (define ch (make-channel))
    (thread-send state-thread (Get ch))
-   (respond
-    (make-response req
-                   `(messages . ,(channel-get ch))))))
+   (respond req
+            (hash 'messages (channel-get ch)))))
 
 (add-handler
  node
  "topology"
  (lambda (req)
-   (respond (make-response req))
+   (respond req)
                
    ; Exit the process on failure to avoid incorrect behavior.       
    (with-handlers

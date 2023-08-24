@@ -6,7 +6,6 @@
          rpc
          send
          respond
-         make-response
          node?
          node-id
          known-peers)
@@ -14,6 +13,7 @@
 (require json
          maelstrom/message
          racket/contract
+         racket/hash
          racket/list
          racket/match
          racket/port
@@ -24,7 +24,6 @@
 ; Used to preserve context to offer an intuitive API
 ; for handlers where they can just call send or respond.
 (define current-node (make-parameter #f))
-(define current-input-msg (make-parameter #f))
 (define current-node-main-thread (make-parameter #f))
 
 (struct node
@@ -43,11 +42,16 @@
   (-> node?)
   (node #f (make-hash) null 0 (make-hasheqv)))
 
-(define/contract (respond response)
-  (-> hash? void)
-  (when (not (current-input-msg))
-    (error "Cannot call send outside the execution context of a handler"))
-  (send (message-sender (current-input-msg)) response))
+(define/contract (respond request [additional-body (hash)])
+  (->* (message?) (hash?) void)
+  (define response
+    (hash 'body
+          (hash-union additional-body
+                      ; this is second so the user doesn't accidentally edit the crucial keys.
+                      (hash 'type (string-append (message-type request) "_ok")
+                            'in_reply_to (message-id request)))))
+
+  (send (message-sender request) response))
 
 (define/contract (send dest msg)
   (-> string? hash? void)
@@ -62,13 +66,7 @@
     (error "Cannot call send outside the execution context of a handler"))
   (define with-deets (add-dest (add-src msg) dest))
   (thread-send (current-node-main-thread) (Rpc with-deets response-handler)))
-
-(define (make-response request . additional-body)
-  (hash 'body (make-immutable-hasheq
-               (append `((type . ,(string-append (message-type request) "_ok"))
-                         (in_reply_to . ,(message-id request)))
-                       additional-body))))
-
+  
 (define/contract (add-handler node type handler)
   (node? string? (message? . -> . any/c) . -> . void)
   (hash-set! (node-handlers node) type handler))
@@ -187,8 +185,7 @@
   (define cust (make-custodian))
   (parameterize ([current-custodian cust]
                  [current-node node]
-                 [current-node-main-thread (current-thread)]
-                 [current-input-msg message])
+                 [current-node-main-thread (current-thread)])
     (thread
      (lambda ()
        (with-handlers
@@ -226,7 +223,7 @@
     (error "Already initialized"))
   (set-node-id! (current-node) (message-ref msg 'node_id))
   (set-node-peers! (current-node) (remove (message-ref msg 'node_id) (message-ref msg 'node_ids)))
-  (respond (make-response msg)))
+  (respond msg))
 
 
 (module+ test
@@ -313,7 +310,7 @@
                   "echo"
                   (lambda (req)
                     (check-equal? (known-peers) (list "n1" "n2"))
-                    (respond (make-response req `(echo . ,(message-ref req 'echo))))))
+                    (respond req (hash 'echo (message-ref req 'echo)))))
      (run node)))
 
   (test-case

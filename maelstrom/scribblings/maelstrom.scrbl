@@ -38,9 +38,7 @@ For example, @hyperlink["https://fly.io/dist-sys/1/"]{Challenge #1 Echo} would b
  (add-handler node
               "echo"
               (lambda (req)
-                (respond
-                 (make-response req
-                                `(echo . ,(message-ref req 'echo))))))
+                (respond req (hash 'echo (message-ref req 'echo))))) 
 
  (module+ main
    (run node))
@@ -49,13 +47,13 @@ For example, @hyperlink["https://fly.io/dist-sys/1/"]{Challenge #1 Echo} would b
 built into a binary using
 
 @verbatim{
-   raco exe echo.rkt
+ raco exe echo.rkt
 }
 
 and then run as
 
 @verbatim{
-maelstrom test -w echo --bin echo --node-count 1 --time-limit 10
+ maelstrom test -w echo --bin echo --node-count 1 --time-limit 10
 }
 
 @section{Creating a node}
@@ -87,7 +85,7 @@ maelstrom test -w echo --bin echo --node-count 1 --time-limit 10
 This library uses Racket's parameters and dynamic scoping to make responding to messages more convenient.
 The handler code does not need to refer to the @racket[node?]. Instead handlers are invoked with the dynamic context suitably modified such that all these functions no which node to act on.
 
-Any sub-threads spawned by handlers will inherit the correct bindings automatically. See @hyperlink["https://github.com/nikhilm/gossip-glommers/blob/436c63464a413a7d267ed0ede4b6b84840650ac7/03_broadcast/3d.rkt"]{this solution to challenge #3d} that spawns a @tt{spawn-minder} thread within the @tt{topology} handler, and the @tt{spawn-minder} thread is still able to use @racket[rpc].
+Any sub-threads spawned by handlers will inherit the correct bindings automatically. See @hyperlink["https://github.com/nikhilm/gossip-glommers/blob/0c1662b3f2c62efbe7f3a6dd6a8355a8f817a453/03_broadcast/3d.rkt"]{this solution to challenge #3d} that spawns a @tt{spawn-minder} thread within the @tt{topology} handler, and the @tt{spawn-minder} thread is still able to use @racket[rpc].
 
 @defproc[(send [dest string?] [msg hash?]) void]{TODO}
 

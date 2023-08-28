@@ -6,7 +6,7 @@
                     json]]
 
 @title{A Racket client for the Maelstrom distributed systems test harness}
-@author{Nikhil Marathe}
+@author[(author+email "Nikhil Marathe" "racket-packages@me.nikhilism.com")]
 
 @defmodule[maelstrom]
 

@@ -165,7 +165,7 @@
   (hash-set response 'dest dest))
 
 (define (rpc-response? msg)
-  (string-suffix? (message-type msg) "_ok"))
+  (hash-has-key? (message-body msg) 'in_reply_to))
 
 (define (remove-and-get-rpc-handler node msg-id)
   (define response-handler (hash-ref (node-rpc-handlers node) msg-id #f))

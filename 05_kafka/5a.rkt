@@ -1,93 +1,114 @@
 #lang racket
+; TODO: Consider converting to typed racket
 
 (require maelstrom
-         maelstrom/message)
+         maelstrom/message
+         (for-syntax racket/syntax))
 
 (define-logger kafka)
-(define node (make-node))
 
-(struct Send (ch key msg))
-(struct Poll (ch offsets))
-(struct Commit-Offsets (ch offsets))
-(struct List-Committed (ch keys))
+; data is actually a list of (list offset index)
+; turns out appending at the end of a list is not particularly slow compared to a gvector for this
+; specific task.
+(struct partition (next-offset committed data) #:transparent)
+
+(define (at-most lst n)
+  (with-handlers ([exn:fail:contract? (thunk* lst)])
+    (take lst n)))
+
+(define (after-offset part-data offset)
+  (dropf
+   part-data
+   (lambda (offset-element)
+     (< (first offset-element) offset))))
+
+(define (append-log logs key msg)
+  (define resp-offset #f)
+  
+  (define (updater part)
+    (define offset (partition-next-offset part))
+    (set! resp-offset offset)
+    (partition (add1 offset)
+               (partition-committed part)
+               (append (partition-data part) (list (list offset msg)))))
+  
+  (define (if-not-exists) (partition 0 0 null))
+  
+  (define new-logs (hash-update logs key updater if-not-exists))
+  (values resp-offset new-logs))
+
+(define (poll logs offsets)
+  (for/hash ([(key offset) (in-hash offsets)]
+             #:do [(define key-sym (symbol->string key))]
+             #:when (hash-has-key? logs key-sym))
+    (values key (at-most
+                 (after-offset
+                  (partition-data (hash-ref logs key-sym))
+                  offset)
+                 5))))
+
+(define (commit-offsets logs offsets)
+  (for/fold ([logs logs])
+            ([(key offset) (in-hash offsets)])
+    (values (hash-update logs (symbol->string key)
+                         (lambda (part)
+                           (partition (partition-next-offset part)
+                                      offset
+                                      (partition-data part)))))))
+
+(define (list-committed logs keys)
+  (for/hash ([key (in-list keys)]
+             #:when (hash-has-key? logs key))
+    (values (string->symbol key)
+            (partition-committed (hash-ref logs key)))))
+
+
+(struct req-resp-base (ch))
+(struct msg_send req-resp-base (key msg))
+(struct msg_poll req-resp-base (offsets))
+(struct msg_commit_offsets req-resp-base (offsets))
+(struct msg_list_committed_offsets req-resp-base (keys))
+
 (define manager
   (thread
    (lambda ()
-     ; data is actually a 2-list of (list offset index)
-     ; this way we can use a list
-     ; TODO: appending at the end of a list is slow. use a gvector.
-     ; you can clearly see "send" latency increase as more and more elements exist in each list.
-     (struct partition (next-offset committed data) #:transparent)
-     
      (let loop ([logs (hash)])
-       #;(log-kafka-debug "in loop, logs is ~v" logs)
-       ; TODO: Clean up the match statement into functions
-       ; use a submodule
        (match (thread-receive)
-         [(Send ch key msg)
-          (log-kafka-debug "send: ~v ~v" key msg)
-          (loop (hash-update logs key
-                             (lambda (part)
-                               (define offset (partition-next-offset part))
-                               (channel-put ch (hash 'offset offset))
-                               (partition (add1 offset) (partition-committed part) (append (partition-data part) (list (list offset msg)))))
-                             (lambda () (partition 0 0 null))))]
+         [(msg_send ch key msg) (define-values (offset new-logs) (append-log logs key msg))
+                                (channel-put ch (hash 'offset offset))
+                                (loop new-logs)]
          
-         [(Poll ch offsets)
-          (log-kafka-debug "poll: ~v" offsets)
-          (define resp (for/hash ([(key offset) (in-hash offsets)]
-                                  ; TODO: Avoid double symbol->string conversion
-                                  #:when (hash-has-key? logs (symbol->string key)))
-                         ; TODO: This is dumb in returning all elements past the offset. constrain to at most N.
-                         (values key (dropf
-                                      (partition-data (hash-ref logs (symbol->string key)))
-                                      (lambda (offset-element)
-                                        (< (first offset-element) offset))))))
-          (channel-put ch (hash 'msgs resp))
-          (loop logs)]
+         [(msg_poll ch offsets) (channel-put ch (hash 'msgs (poll logs offsets)))
+                                (loop logs)]
          
-         [(Commit-Offsets ch offsets)
-          (log-kafka-debug "commit-offsets: ~v" offsets)
-          (define new-logs (for/fold ([logs logs])
-                                     ([(key offset) (in-hash offsets)])
-                             (values (hash-update logs (symbol->string key)
-                                                  (lambda (part)
-                                                    (partition (partition-next-offset part)
-                                                               offset
-                                                               (partition-data part)))))))
-          ; respond
-          (channel-put ch (hash))
-          (loop new-logs)]
+         [(msg_commit_offsets ch offsets) (define new-logs (commit-offsets logs offsets))
+                                          (channel-put ch (hash))
+                                          (loop new-logs)]
          
-         [(List-Committed ch keys)
-          (log-kafka-debug "list-committed: ~v" keys)
-          (channel-put ch
-                       (hash 'offsets
-                             (for/hash ([key (in-list keys)]
-                                        #:when (hash-has-key? logs key))
-                               (values (string->symbol key)
-                                       (partition-committed (hash-ref logs key))))))
-          (loop logs)])))))
+         [(msg_list_committed_offsets ch keys) (channel-put ch (hash 'offsets (list-committed logs keys)))
+                                               (loop logs)])))))
 
 ; My first macro!
 (define-syntax (handler stx)
   (syntax-case stx ()
-    [(_ node message manager op args ...)
-     #'(add-handler node
-                    message
-                    (lambda (req)
-                      (log-kafka-debug "Sending client is ~v" (message-sender req))
-                      (define message-elements (map (curry message-ref req) (list args ...)))
-                      (define ch (make-channel))
-                      (thread-send manager (apply op ch message-elements))
-                      (define r (channel-get ch))
-                      (log-kafka-debug "~v: ~v response: ~v" (current-inexact-monotonic-milliseconds) message r)
-                      (respond req r)))]))
+    [(_ node message manager args ...)
+     (with-syntax ([msg_struct (format-id #'message "msg_~a" #'message)])
+       #'(add-handler node
+                      message
+                      (lambda (req)
+                        (define message-elements (map (curry message-ref req) (list args ...)))
+                        (define ch (make-channel))
+                        (log-kafka-debug "~v: request  ~v: ~v" (current-inexact-monotonic-milliseconds) message message-elements)
+                        (thread-send manager (apply msg_struct ch message-elements))
+                        (define r (channel-get ch))
+                        (log-kafka-debug "~v: response ~v: ~v" (current-inexact-monotonic-milliseconds) message r)
+                        (respond req r))))]))
 
-(handler node "send" manager Send 'key 'msg)
-(handler node "poll" manager Poll 'offsets)
-(handler node "commit_offsets" manager Commit-Offsets 'offsets)
-(handler node "list_committed_offsets" manager List-Committed 'keys)
+(define node (make-node))
+(handler node "send" manager 'key 'msg)
+(handler node "poll" manager 'offsets)
+(handler node "commit_offsets" manager 'offsets)
+(handler node "list_committed_offsets" manager 'keys)
 
 (module+ main
   (run node))

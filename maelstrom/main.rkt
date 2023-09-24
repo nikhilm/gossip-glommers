@@ -13,6 +13,7 @@
 (require json
          maelstrom/message
          racket/contract
+         racket/function
          racket/hash
          racket/list
          racket/match
@@ -86,6 +87,13 @@
     (initialize node)
 
     (define reader-thread (spawn-reader-thread (current-thread)))
+
+    ; Since a handler returns the jsexpr to write, if it returns a malformed
+    ; jsexpr, then the stack trace isn't very useful, as only the main loop is
+    ; present. Log the value for some slightly useful messaging.
+    (define (write-exn-handler msg e)
+      (log-maelstrom-error "Error writing '~v'" msg)
+      (raise e))
     
     (let loop ([dispatched null]
                [done-with-inputs #f])
@@ -108,13 +116,19 @@
                          (loop dispatched done-with-inputs))]
                     
                     [(Output msg)
-                     (write-msg node msg)
+                     (with-handlers
+                         ([exn:fail?
+                           (curry write-exn-handler msg)])
+                       (write-msg node msg))
                      (loop dispatched done-with-inputs)]
 
                     [(Rpc msg response-handler)
                      (define next-id (next-outgoing-id node))
                      (hash-set! (node-rpc-handlers node) next-id response-handler)
-                     (write-msg-int next-id msg)
+                     (with-handlers
+                         ([exn:fail?
+                           (curry write-exn-handler msg)])
+                       (write-msg-int next-id msg))
                      (loop dispatched done-with-inputs)])))
                
                
@@ -127,7 +141,12 @@
     ; go through any final pending tasks in the queue
     (let loop ()
       (match (thread-try-receive)
-        [(Output msg) (write-msg node msg) (loop)]
+        [(Output msg)
+         (with-handlers
+             ([exn:fail?
+               (curry write-exn-handler msg)])
+           (write-msg node msg))
+         (loop)]
         [#f void])))
 
   ; shut down all handlers before exiting

@@ -5,9 +5,6 @@
          maelstrom/kv)
 
 (define-logger counter)
-
-(define kv (make-kv "seq-kv"))
-
 (define node (make-node))
 
 (define (node-key)
@@ -19,9 +16,9 @@
                ; Since each node only updates its own entry, the CAS is to prevent
                ; inconsistencies if the different handler threads ran out of order.
                (let loop ()
-                 (define current (kv-read kv (node-key)))
+                 (define current (kv-read seq-kv (node-key)))
                  (define new (+ current (message-ref req 'delta)))
-                 (unless (kv-cas kv (node-key) current new #:create-if-missing? #t)
+                 (unless (kv-cas seq-kv (node-key) current new #:create-if-missing? #t)
                    (loop)))
                (respond req)))
 
@@ -29,7 +26,7 @@
              "read"
              (lambda (req)
                (define all-keys (cons (node-key) (known-peers)))
-               (respond req (hash 'value (apply + (map (curry kv-read kv) all-keys))))))
+               (respond req (hash 'value (apply + (map (curry kv-read seq-kv) all-keys))))))
 
 (module+ main
   (run node))

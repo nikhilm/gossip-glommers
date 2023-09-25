@@ -7,6 +7,10 @@ compiled
 /03_broadcast/3c
 /03_broadcast/3d
 /03_broadcast/3e
+/04_counter/4
+/05_kafka/5a
+/05_kafka/5b
+/05_kafka/5c
 
 # generated docs
 maelstrom/scribblings/maelstrom.html

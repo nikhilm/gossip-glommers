@@ -23,7 +23,7 @@
   (log-kv-debug "Waiting for rpc response on kv-op ~v" msg)
   (channel-get ch))
 
-(define (kv-read kv k [default 0])
+(define (kv-read kv k default)
   (define resp (kv-operation kv (make-message (hash 'type "read"
                                                     'key k))))
   (case (message-type resp)

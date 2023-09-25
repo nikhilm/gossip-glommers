@@ -16,7 +16,7 @@
                ; Since each node only updates its own entry, the CAS is to prevent
                ; inconsistencies if the different handler threads ran out of order.
                (let loop ()
-                 (define current (kv-read seq-kv (node-key)))
+                 (define current (kv-read seq-kv (node-key) 0))
                  (define new (+ current (message-ref req 'delta)))
                  (unless (kv-cas seq-kv (node-key) current new #:create-if-missing? #t)
                    (loop)))

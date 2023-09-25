@@ -92,7 +92,7 @@
     ; jsexpr, then the stack trace isn't very useful, as only the main loop is
     ; present. Log the value for some slightly useful messaging.
     (define (write-exn-handler msg e)
-      (log-maelstrom-error "Error writing '~v'" msg)
+      (log-maelstrom-error "Error writing ~v" msg)
       (raise e))
     
     (let loop ([dispatched null]

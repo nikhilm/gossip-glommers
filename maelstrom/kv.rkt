@@ -5,6 +5,7 @@
 
 (provide seq-kv
          lin-kv
+         lww-kv
          kv-read
          kv-write
          kv-cas)
@@ -12,6 +13,7 @@
 (struct kv (id))
 (define seq-kv (kv "seq-kv"))
 (define lin-kv (kv "lin-kv"))
+(define lww-kv (kv "lww-kv"))
 
 (define-logger kv)
 
@@ -29,7 +31,7 @@
   (case (message-type resp)
     [("error") default]
     [("read_ok") (message-ref resp 'value)]
-    [else (error 'kv-read "Unexpected respose type ~v" (message-type resp))]))
+    [else (error 'kv-read "Unexpected response type ~v" (message-type resp))]))
 
 (define (kv-write kv k v)
   (define resp (kv-operation kv (make-message (hash 'type "write"
@@ -48,7 +50,7 @@
     [("cas_ok") #t]
     [("error") (case (message-ref resp 'code)
                  [(22) (begin
-                         (log-kv-warning "CAS did not succeed ~v ~v ~v because: ~v" k from to (message-ref resp 'text))
+                         (log-kv-debug "CAS did not succeed ~v ~v ~v because: ~v" k from to (message-ref resp 'text))
                          #f)]
                  [(20) (error 'kv-cas "~v: ~v" k (message-ref resp 'text))])]
     [else (error 'kv-cas "Unexpected response type ~v" (message-type resp))]))

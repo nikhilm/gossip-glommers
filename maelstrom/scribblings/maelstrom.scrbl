@@ -79,9 +79,9 @@ and then run as:
 @defproc[(run [node node?]) void]{
  Begins running a node. This is a @emph{blocking} call. It will use @racket[current-input-port] to read messages sent to the node and @racket[current-output-port] to write outgoing messages. To ensure preconditions are satisfied, @racket[run] expects a @tt{"init"} message as the first message.
 
-@racket[run] will only return once @racket[current-input-port] is closed and all handlers have returned. To forcibly shut it down, you can spawn it in a separate @racket[thread] and use @racket[kill-thread].
+ @racket[run] will only return once @racket[current-input-port] is closed and all handlers have returned. To forcibly shut it down, you can spawn it in a separate @racket[thread] and use @racket[kill-thread].
 
-It is undefined behavior to call @racket[run] on the same node more than once!
+ It is undefined behavior to call @racket[run] on the same node more than once!
 }
 
 @section{Sending messages}
@@ -92,21 +92,21 @@ The handler code does not need to refer to the @racket[node?]. Instead handlers 
 Any sub-threads spawned by handlers will inherit the correct bindings automatically. See @hyperlink["https://github.com/nikhilm/gossip-glommers/blob/0c1662b3f2c62efbe7f3a6dd6a8355a8f817a453/03_broadcast/3d.rkt"]{this solution to challenge #3d} that spawns a @tt{spawn-minder} thread within the @tt{topology} handler, and the @tt{spawn-minder} thread is still able to use @racket[rpc].
 
 @defproc[(send [dest string?] [msg hash?]) void]{
-Send a new message to the peer with id @racket[dest]. @racket[msg] should contain at least a @racket['body]. It is recommended to use @racket[make-message]. No response is expected from the peer. To listen for responses, use @racket[rpc].
+ Send a new message to the peer with id @racket[dest]. @racket[msg] should contain at least a @racket['body]. It is recommended to use @racket[make-message]. No response is expected from the peer. To listen for responses, use @racket[rpc].
 }
 
 @defproc[(respond [request message?] [additional-body hash? (hash)]) void]{
-A convenience function to use to respond to the message which caused this handler to be run. This will automatically fill in the appropriate @racket['type] and @racket['in_reply_to], and send the message to the original sender of @racket[request].
+ A convenience function to use to respond to the message which caused this handler to be run. This will automatically fill in the appropriate @racket['type] and @racket['in_reply_to], and send the message to the original sender of @racket[request].
 
-@racket[request] will usually be the message received by the handler procedure. Any additional body parameters can be supplied in the @racket[additional-body] hash. See the example in @secref["introduction"].
+ @racket[request] will usually be the message received by the handler procedure. Any additional body parameters can be supplied in the @racket[additional-body] hash. See the example in @secref["introduction"].
 }
 
 @defproc[(rpc [dest string?] [msg hash?] [proc (message? . -> . any/c)]) void]{
-Sends @racket[msg] to @racket[dest] similar to @racket[send]. In addition, @racket[proc] will be called when the peer responds to this specific @racket[msg]. This is correlated by @racket['msg_id] and @racket['in_reply_to] according to the Maelstrom protocol. @racket[proc] receives the message sent by the peer.
+ Sends @racket[msg] to @racket[dest] similar to @racket[send]. In addition, @racket[proc] will be called when the peer responds to this specific @racket[msg]. This is correlated by @racket['msg_id] and @racket['in_reply_to] according to the Maelstrom protocol. @racket[proc] receives the message sent by the peer.
       
-Similar to @racket[add-handler] handlers, @racket[proc] is called in a new @racket[thread].
+ Similar to @racket[add-handler] handlers, @racket[proc] is called in a new @racket[thread].
 
-Note that @racket[proc] is stored until a response is received. This means if peers never respond to messages, memory leaks are possible. There is no solution to this right now, as Maelstrom is not for building production services.
+ Note that @racket[proc] is stored until a response is received. This means if peers never respond to messages, memory leaks are possible. There is no solution to this right now, as Maelstrom is not for building production services.
 }
 
 @section{Other node operations}
@@ -148,6 +148,44 @@ Messages are simply @racket[jsexpr?]s with some additional semantics required by
                  'field1 58
                  'field2 (list "multiple" "items"))))))
  ]
+
+@section{Access to key-value stores}
+
+@defmodule[maelstrom/kv]
+
+Maelstrom provides a few different key-value (KV) stores that your nodes can use. These are exposed via the kv module.
+
+@; This style is required to embed comments into the output code.
+@#reader scribble/comment-reader
+(racketblock
+ (require maelstrom/kv)
+
+ ; Read my-key from the sequentially consistent store.
+ ; Return 0 if the key does not exist in the store.
+ (kv-read seq-kv "my-key" 0)
+)
+
+@defthing[lin-kv kv?]{The linearizable key-value store.}
+@defthing[lww-kv kv?]{The last-write-wins key-value store.}
+@defthing[seq-kv kv?]{The sequentially consistent key-value store.}
+
+@defproc[(kv-read [kv kv?] [k string?] [default jsexpr?]) jsexpr?]{
+ Read key @racket[k] from the kv store. If @racket[k] is not present, @racket[default] is returned.
+}
+
+@defproc[(kv-write [kv kv?] [k string?] [v jsexpr?]) void]{
+ Write value @racket[v] to key @racket[k].}
+
+@defproc[(kv-cas [kv kv?]
+                 [k string?]
+                 [from jsexpr?]
+                 [to jsexpr?]
+                 [#:create-if-missing? create-if-missing? bool? #f])
+         bool?]{
+ Attempts a compare-and-swap on key @racket[k]. This operation will succeed (and return @racket[#t]) if @racket[k] had the value @racket[from], and will atomically set @racket[k] to @racket[to]. If @racket[k] is not @racket[from] then the operation will fail, returning @racket[#f].
+
+ If @racket[create-if-missing?] is @racket[#t], then the key is created if it does not exist. If @racket[create-if-missing?] is @racket[#f], then an error will be raised.
+}
 
 @section{Logging}
 

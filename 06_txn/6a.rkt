@@ -5,7 +5,6 @@
 
 (define-logger txn)
 
-
 ; one of the design mistakes i've been making in previous problems
 ; is that i often start the "manager" thread outside of the main module.
 ; which is weird because ideally there shouldn't be any running code before that.

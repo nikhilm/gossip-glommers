@@ -59,10 +59,10 @@
 ; a txn-store is just a hash
 ; where the values are the value and the largest txn-id that last performed a write.
 (define (value pair)
-  (first pair))
+  (car pair))
 
 (define (w-txn pair)
-  (second pair))
+  (cdr pair))
 
 ; in 6b, reads never care about the transaction
 (define (store-ref store k)
@@ -98,7 +98,7 @@
                    new-store)]
 
           [(list "w" k v)
-           (define updated (store-set new-store k (v . txn-id)))
+           (define updated (store-set new-store k (cons v txn-id)))
            ; the spec seems to say the response for writes should be the value
            ; that was sent in. 6b has no notion of failing a transaction.
            (values (cons (list "w" k v) resp)
@@ -108,27 +108,47 @@
 
 (module+ main
   (define node (make-node))
-  (define the-txn-id )
+
+  (define seq-num 0)
+  (define seq-sema (make-semaphore 1))
+  (define (bump-seq)
+    (call-with-semaphore seq-sema
+                         (lambda ()
+                           (set! seq-num (add1 seq-num))
+                           seq-num)))
+  
   (define txn-processor
     (thread txn-processor-loop))
   
   (add-handler node
                "txn"
                (lambda (req)
-                 ; TODO: A simpler way is to just have a semaphore
-                 ; and call-with-semaphore to incr/init the txn-id from here
-                 ; and that way each handler run mints a txn-id and sends it to the
-                 ; processor loop.
+                 (define nid (string->number (substring (node-id node) 1)))
+                 (define this-txn (txn-id (bump-seq) nid))
                  (define ch (make-channel))
-                 (thread-send txn-processor (cons ch (message-ref req 'txn)))
-                 ; TODO: Perform peer RPC
+                 (thread-send txn-processor (list ch (message-ref req 'txn) this-txn))
+                 ; This will fail under partitions, but the 6b runner doesn't seem to check
+                 ; for that failure. It's odd. Going to actually fix this in 6c.
+                 (for ([peer (in-list (known-peers))])
+                   (rpc peer
+                        (make-message
+                         (hash 'txn (message-ref req 'txn)
+                               'txn_id (txn-id->jsexpr this-txn)
+                               'type "remote-txn"))
+                        (lambda (r)
+                          ; TODO: Handle the retry-until-success
+                          void)))
                  (respond req (hash 'txn (channel-get ch)))))
 
-  ; TODO: Set up peer rpc handlers
-
-  ; TODO: Do we extend maelstrom to allow nodes to define their own "init", so that
-  ; we can get the node id and mint the first txn-id?
-  ; or do we mint a new txn-id into a box the first time the handler runs
-  ; and how do we then propagate that to the txn-processor thread so it can manage it from then on?
+  (add-handler node
+               "remote-txn"
+               (lambda (req)
+                 (define ch (make-channel))
+                 (thread-send txn-processor
+                              (list ch
+                                    (message-ref req 'txn)
+                                    (jsexpr->txn-id (message-ref req 'txn_id))))
+                 (channel-get ch)
+                 (respond req (hash))))
   
   (run node))

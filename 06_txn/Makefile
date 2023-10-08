@@ -24,3 +24,6 @@ all: 6a 6b 6c
 6c-test: 6c
 	PLTSTDERR="error debug@txn" $(HOME)/maelstrom/maelstrom test -w txn-rw-register --bin $(PWD)/6c --node-count 2 --concurrency 2n --time-limit 20 --rate 1000 --consistency-models read-committed --availability total –-nemesis partition
 
+6c-test-single: 6c
+	PLTSTDERR="error debug@txn" $(HOME)/maelstrom/maelstrom test -w txn-rw-register --bin $(PWD)/6c --node-count 1 --concurrency 2n --time-limit 10 --rate 1000 --consistency-models read-committed --availability total –-nemesis partition
+

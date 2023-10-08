@@ -19,7 +19,7 @@
 ; transaction's sequence number.
 
 ; gets JSON encoded as a list
-(struct txn-id (seq node))
+(struct txn-id (seq node) #:transparent)
 
 (define/contract (txn-id->jsexpr txn)
   (-> txn-id? (list/c natural? natural?))
@@ -34,13 +34,13 @@
   (-> txn-id? txn-id?)
   (txn-id (add1 (txn-id-seq seq)) (txn-id-node seq)))
 
-(define/contract (txn-id-< seq1 seq2)
+(define/contract (txn-id-<= seq1 seq2)
   (-> txn-id? txn-id? boolean?)
   (let ([n1 (txn-id-node seq1)]
         [n2 (txn-id-node seq2)])
    (cond
-    [(= n1 n2) (< (txn-id-seq seq1) (txn-id-seq seq2))]
-    [else (< n1 n2)])))
+    [(= n1 n2) (<= (txn-id-seq seq1) (txn-id-seq seq2))]
+    [else (<= n1 n2)])))
 
 (module+ test
   (require rackunit)
@@ -50,11 +50,11 @@
              (lambda ()
                (jsexpr->txn-id (hash 'foo 532))))
 
-  (check-true (txn-id-< (txn-id 457 1) (txn-id 982 1)))
-  (check-false (txn-id-< (txn-id 457 1) (txn-id 457 1)))
-  (check-false (txn-id-< (txn-id 457 1) (txn-id 400 1)))
+  (check-true (txn-id-<= (txn-id 457 1) (txn-id 982 1)))
+  (check-true (txn-id-<= (txn-id 457 1) (txn-id 457 1)))
+  (check-false (txn-id-<= (txn-id 457 1) (txn-id 400 1)))
 
-  (check-true (txn-id-< (txn-id 457 1) (txn-id 2 13))))
+  (check-true (txn-id-<= (txn-id 457 1) (txn-id 2 13))))
 
 ; a txn-store is just a hash
 ; where the values are the value and the largest txn-id that last performed a write.
@@ -74,7 +74,7 @@
 (define (store-set store k v)
   (hash-update store k
                (lambda (old-v)
-                 (if (txn-id-< (w-txn old-v) (w-txn v))
+                 (if (txn-id-<= (w-txn old-v) (w-txn v))
                      ; perform the update
                      v
                      ; skip the update
@@ -90,7 +90,9 @@
     (match-define (list resp-ch txn-req txn-id) (thread-receive))
     (define-values (resp new-store)
       (for/fold ([resp null]
-                 [new-store store])
+                 [new-store store]
+                 ; cons is used for efficiency. reverse the final list to match expectations.
+                 #:result (values (reverse resp) new-store))
                 ([operation (in-list txn-req)])
         (match operation
           [(list "r" k 'null)

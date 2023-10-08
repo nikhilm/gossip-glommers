@@ -10,13 +10,6 @@
 ; The Jepsen website also does, but it doesn't say anything about how to implement something like this.
 ; https://www.vldb.org/pvldb/vol7/p181-bailis.pdf
 ;
-; For Read Uncommitted, the basic idea is to impose a total ordering on all transactions.
-; This ordering can be deterministic by using the node ID + sequence number as the ordering key.
-; Each transaction is assigned the number. The node that receives a client request stamps the
-; transaction with its next sequence number. It then commits to itself, and also attempts to send
-; an RPC to peers.
-; Reads can immediately be read from the store. Writes perform last-writer-wins based on the
-; transaction's sequence number.
 
 ; gets JSON encoded as a list
 (struct txn-id (seq node) #:transparent)
@@ -129,18 +122,22 @@
                  (define this-txn (txn-id (bump-seq) nid))
                  (define ch (make-channel))
                  (thread-send txn-processor (list ch (message-ref req 'txn) this-txn))
-                 ; This will fail under partitions, but the 6b runner doesn't seem to check
-                 ; for that failure. It's odd. Going to actually fix this in 6c.
-                 (for ([peer (in-list (known-peers))])
-                   (rpc peer
-                        (make-message
+                 ; no need to block the client on replication.
+                 (respond req (hash 'txn (channel-get ch)))
+                 
+                 (define unacked (list->mutable-set (known-peers)))
+                 (let loop ([i 1])
                          (hash 'txn (message-ref req 'txn)
-                               'txn_id (txn-id->jsexpr this-txn)
-                               'type "remote-txn"))
-                        (lambda (r)
-                          ; TODO: Handle the retry-until-success
-                          void)))
-                 (respond req (hash 'txn (channel-get ch)))))
+                   (unless (set-empty? unacked)
+                     (for ([peer (in-set unacked)])
+                       (rpc peer (make-message
+                                  (hash 'txn (message-ref req 'txn)
+                                        'txn_id (txn-id->jsexpr this-txn)
+                                        'type "remote-txn"))
+                            (lambda (response)
+                              (set-remove! unacked (message-sender response)))))
+                     (sleep 0.5)
+                     (loop (add1 i))))))
 
   (add-handler node
                "remote-txn"

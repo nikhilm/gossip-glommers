@@ -10,8 +10,11 @@
 ; The Jepsen website also does, but it doesn't say anything about how to implement something like this.
 ; https://www.vldb.org/pvldb/vol7/p181-bailis.pdf
 ;
+; our 6b implementation is already stronger than Read-Committed, being Monotonic Atomic View if I understand
+; correctly, due to the serializing that occurs in the txn processor loop. It is MAV in the single node case,
+; particularly preventing g1b and g1c. However this solution isn't responding with aborting transactions yet.
+; In essence, our implementation is "correct", but isn't really exercising true transaction aborts.
 
-; gets JSON encoded as a list
 (struct txn-id (seq node) #:transparent)
 
 (define/contract (txn-id->jsexpr txn)
@@ -137,7 +140,7 @@
                             (lambda (response)
                               (set-remove! unacked (message-sender response)))))
                      (sleep 0.5)
-                     (loop (add1 i))))))
+                     (loop (add1 i)))))))
 
   (add-handler node
                "remote-txn"
